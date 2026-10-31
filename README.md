@@ -60,4 +60,15 @@ O wrapper intercepta o armazenamento do jogo e comunica-se via IPC com o host .N
 4. **Disparo assíncrono:** Ao carregar via `action: 'load'`, o C# dispara `SaveLoaded` com `{ detail: { key, data } }` no JavaScript.
 5. **Teste de integridade:** Mensagem `"TestIPC_Success"` emitida no evento `load` da janela.
 
+## Créditos e Agradecimentos
+
+Este projeto é um wrapper nativo que utiliza como base os arquivos e modificações desenvolvidos pela comunidade e pelos criadores originais:
+
+* **[Bohemia Interactive](https://www.bohemia.net/):** Desenvolvedora e criadora original do jogo **Mini DAYZ** (versão mobile e browser original 1.4.1).
+* **[NextDev65](https://github.com/NextDev65/MiniDayZ):** Repositório base utilizado para extração dos arquivos do jogo e preservação da versão web jogável no PC.
+* **Altero:** Criador do mod **Mini DayZ+ (MDZ+ v1.2)**, versão incorporada em `wwwroot` com melhorias de jogabilidade, suporte aprimorado a mouse/PC e rebalanceamento.
+* **Kev3232:** Criador do mod **Mini DayZ Reloaded 1.1**.
+* **meterpreter:** Pelo trabalho de engenharia reversa e exportação dos pacotes.
+
+
 
