@@ -20,6 +20,7 @@ Core i3 com 8 GB de RAM). O WebView2 é instanciado com um ambiente Chromium enx
 
 ```
 MiniDayZ.App.sln
+EVOLUCAO.md                # Histórico completo de evolução técnica do projeto
 src/MiniDayZ.App/
 ├── SaveSystem.cs          # Sistema de persistência em %LOCALAPPDATA%\MiniDayZ\Saves
 ├── MainWindow.xaml(.cs)   # Host WebView2 + ponte IPC (saves, load, console)
