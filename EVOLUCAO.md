@@ -198,3 +198,4 @@ No Visual Studio:
 - [ ] Configurar suspensão de renderização e redução de memória (`MemoryUsageTargetLevel = Low`) quando a janela for minimizada.
 - [ ] Criar gerenciador visual de perfis de save na interface WPF nativa.
 - [ ] Publicação do pacote como executável autocontido (*Single-File Publish*).
+

@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Text.Json;
@@ -8,6 +9,8 @@ namespace MiniDayZ.App;
 
 public partial class MainWindow : Window
 {
+    private bool _isSafeToClose = false;
+
     /// <summary>
     /// Flags do Chromium: remove telemetria/tarefas de fundo e empurra rasterização para a GPU.
     /// </summary>
@@ -24,7 +27,33 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        this.Closing += MainWindow_Closing;
         Loaded += async (_, _) => await InitializeAsync();
+    }
+
+    private async void MainWindow_Closing(object? sender, CancelEventArgs e)
+    {
+        if (!_isSafeToClose)
+        {
+            if (WebView?.CoreWebView2 is null)
+            {
+                _isSafeToClose = true;
+                return;
+            }
+
+            e.Cancel = true;
+
+            try
+            {
+                await WebView.CoreWebView2.ExecuteScriptAsync(
+                    "window.chrome.webview.postMessage(JSON.stringify({ action: 'save_on_close', data: JSON.stringify(localStorage) }));");
+            }
+            catch
+            {
+                _isSafeToClose = true;
+                Application.Current.Shutdown();
+            }
+        }
     }
 
     private async Task InitializeAsync()
@@ -121,52 +150,115 @@ public partial class MainWindow : Window
 
             if (root.ValueKind == JsonValueKind.String)
             {
-                Debug.WriteLine($"[MiniDayZ IPC] {root.GetString()}");
+                string strMsg = root.GetString() ?? string.Empty;
+                if (strMsg.StartsWith('{'))
+                {
+                    using var innerDoc = JsonDocument.Parse(strMsg);
+                    HandleMessageObject(innerDoc.RootElement);
+                    return;
+                }
+
+                Debug.WriteLine($"[MiniDayZ IPC] {strMsg}");
                 return;
             }
 
-            if (root.ValueKind != JsonValueKind.Object ||
-                !root.TryGetProperty("action", out JsonElement actionEl) ||
-                !root.TryGetProperty("key", out JsonElement keyEl) ||
-                keyEl.ValueKind != JsonValueKind.String)
+            if (root.ValueKind == JsonValueKind.Object)
             {
-                Debug.WriteLine($"[MiniDayZ IPC] Mensagem ignorada: {json}");
+                HandleMessageObject(root);
                 return;
             }
 
-            string action = actionEl.GetString() ?? string.Empty;
-            string key = keyEl.GetString()!;
-
-            switch (action)
-            {
-                case "save":
-                    string data = root.TryGetProperty("data", out JsonElement dataEl) &&
-                                  dataEl.ValueKind == JsonValueKind.String
-                        ? dataEl.GetString()!
-                        : string.Empty;
-                    SaveSystem.Save(key, data);
-                    Debug.WriteLine($"[MiniDayZ IPC] save '{key}' ({data.Length} chars)");
-                    break;
-
-                case "load":
-                    string? result = SaveSystem.Load(key);
-                    Debug.WriteLine($"[MiniDayZ IPC] load '{key}' ({(result is null ? "null" : $"{result.Length} chars")})");
-                    _ = SendSaveLoadedAsync(key, result);
-                    break;
-
-                case "delete":
-                    SaveSystem.Delete(key);
-                    Debug.WriteLine($"[MiniDayZ IPC] delete '{key}'");
-                    break;
-
-                default:
-                    Debug.WriteLine($"[MiniDayZ IPC] Ação desconhecida: {action}");
-                    break;
-            }
+            Debug.WriteLine($"[MiniDayZ IPC] Mensagem ignorada: {json}");
         }
         catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException or ArgumentException)
         {
             Debug.WriteLine($"[MiniDayZ IPC] Erro: {ex.Message}");
+        }
+    }
+
+    private void HandleMessageObject(JsonElement root)
+    {
+        if (!root.TryGetProperty("action", out JsonElement actionEl) ||
+            actionEl.ValueKind != JsonValueKind.String)
+        {
+            return;
+        }
+
+        string action = actionEl.GetString() ?? string.Empty;
+
+        if (action == "save_on_close")
+        {
+            if (root.TryGetProperty("data", out JsonElement closeDataEl))
+            {
+                if (closeDataEl.ValueKind == JsonValueKind.String)
+                {
+                    string rawStorage = closeDataEl.GetString() ?? string.Empty;
+                    if (!string.IsNullOrEmpty(rawStorage))
+                    {
+                        using var storageDoc = JsonDocument.Parse(rawStorage);
+                        if (storageDoc.RootElement.ValueKind == JsonValueKind.Object)
+                        {
+                            foreach (JsonProperty prop in storageDoc.RootElement.EnumerateObject())
+                            {
+                                string val = prop.Value.ValueKind == JsonValueKind.String
+                                    ? prop.Value.GetString()!
+                                    : prop.Value.GetRawText();
+                                SaveSystem.Save(prop.Name, val);
+                            }
+                        }
+                    }
+                }
+                else if (closeDataEl.ValueKind == JsonValueKind.Object)
+                {
+                    foreach (JsonProperty prop in closeDataEl.EnumerateObject())
+                    {
+                        string val = prop.Value.ValueKind == JsonValueKind.String
+                            ? prop.Value.GetString()!
+                            : prop.Value.GetRawText();
+                        SaveSystem.Save(prop.Name, val);
+                    }
+                }
+            }
+
+            Debug.WriteLine("[MiniDayZ IPC] save_on_close concluído.");
+            _isSafeToClose = true;
+            Application.Current.Shutdown();
+            return;
+        }
+
+        if (!root.TryGetProperty("key", out JsonElement keyEl) ||
+            keyEl.ValueKind != JsonValueKind.String)
+        {
+            return;
+        }
+
+        string key = keyEl.GetString()!;
+
+        switch (action)
+        {
+            case "save":
+                string data = root.TryGetProperty("data", out JsonElement dataEl) &&
+                              dataEl.ValueKind == JsonValueKind.String
+                    ? dataEl.GetString()!
+                    : string.Empty;
+                SaveSystem.Save(key, data);
+                Debug.WriteLine($"[MiniDayZ IPC] save '{key}' ({data.Length} chars)");
+                break;
+
+            case "load":
+                string? result = SaveSystem.Load(key);
+                Debug.WriteLine($"[MiniDayZ IPC] load '{key}' ({(result is null ? "null" : $"{result.Length} chars")})");
+                _ = SendSaveLoadedAsync(key, result);
+                break;
+
+            case "delete":
+                SaveSystem.Delete(key);
+                Debug.WriteLine($"[MiniDayZ IPC] delete '{key}'");
+                break;
+
+            default:
+                Debug.WriteLine($"[MiniDayZ IPC] Ação desconhecida: {action}");
+                break;
         }
     }
 
