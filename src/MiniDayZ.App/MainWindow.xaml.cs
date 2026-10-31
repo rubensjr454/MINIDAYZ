@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.IO;
+using System.Text.Json;
 using System.Windows;
 using Microsoft.Web.WebView2.Core;
 
@@ -53,6 +54,10 @@ public partial class MainWindow : Window
             // Ponte IPC (JS -> C#)
             core.WebMessageReceived += OnWebMessageReceived;
 
+            // Hidrata os saves do disco ANTES de qualquer script da página (getItem é síncrono no JS).
+            string savesJson = JsonSerializer.Serialize(SaveSystem.LoadAll());
+            await core.AddScriptToExecuteOnDocumentCreatedAsync($"window.__MDZ_SAVES__ = {savesJson};");
+
 #if DEBUG
             await AttachConsoleLoggingAsync(core);
 #endif
@@ -103,18 +108,76 @@ public partial class MainWindow : Window
 
     private void OnWebMessageReceived(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
     {
-        string message;
+        // Só aceita IPC vindo do próprio jogo (host virtual).
+        if (!e.Source.StartsWith($"https://{VirtualHost}/", StringComparison.OrdinalIgnoreCase))
+            return;
+
+        string json = e.WebMessageAsJson;
+
         try
         {
-            message = e.TryGetWebMessageAsString();
-        }
-        catch (ArgumentException)
-        {
-            // Mensagem não-string (objeto JSON)
-            message = e.WebMessageAsJson;
-        }
+            using var doc = JsonDocument.Parse(json);
+            JsonElement root = doc.RootElement;
 
-        Debug.WriteLine($"[MiniDayZ IPC] {message}");
+            if (root.ValueKind == JsonValueKind.String)
+            {
+                Debug.WriteLine($"[MiniDayZ IPC] {root.GetString()}");
+                return;
+            }
+
+            if (root.ValueKind != JsonValueKind.Object ||
+                !root.TryGetProperty("action", out JsonElement actionEl) ||
+                !root.TryGetProperty("key", out JsonElement keyEl) ||
+                keyEl.ValueKind != JsonValueKind.String)
+            {
+                Debug.WriteLine($"[MiniDayZ IPC] Mensagem ignorada: {json}");
+                return;
+            }
+
+            string action = actionEl.GetString() ?? string.Empty;
+            string key = keyEl.GetString()!;
+
+            switch (action)
+            {
+                case "save":
+                    string data = root.TryGetProperty("data", out JsonElement dataEl) &&
+                                  dataEl.ValueKind == JsonValueKind.String
+                        ? dataEl.GetString()!
+                        : string.Empty;
+                    SaveSystem.Save(key, data);
+                    Debug.WriteLine($"[MiniDayZ IPC] save '{key}' ({data.Length} chars)");
+                    break;
+
+                case "load":
+                    string? result = SaveSystem.Load(key);
+                    Debug.WriteLine($"[MiniDayZ IPC] load '{key}' ({(result is null ? "null" : $"{result.Length} chars")})");
+                    _ = SendSaveLoadedAsync(key, result);
+                    break;
+
+                case "delete":
+                    SaveSystem.Delete(key);
+                    Debug.WriteLine($"[MiniDayZ IPC] delete '{key}'");
+                    break;
+
+                default:
+                    Debug.WriteLine($"[MiniDayZ IPC] Ação desconhecida: {action}");
+                    break;
+            }
+        }
+        catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            Debug.WriteLine($"[MiniDayZ IPC] Erro: {ex.Message}");
+        }
+    }
+
+    private Task SendSaveLoadedAsync(string key, string? result)
+    {
+        // JsonSerializer gera literais JS seguros (escapa aspas, \, <, >, &, ', U+2028/2029).
+        string keyJs = JsonSerializer.Serialize(key);
+        string dataJs = result is null ? "null" : JsonSerializer.Serialize(result);
+
+        return WebView.CoreWebView2.ExecuteScriptAsync(
+            $"window.dispatchEvent(new CustomEvent('SaveLoaded', {{ detail: {{ key: {keyJs}, data: {dataJs} }} }}));");
     }
 
 #if DEBUG

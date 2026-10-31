@@ -21,7 +21,8 @@ Core i3 com 8 GB de RAM). O WebView2 é instanciado com um ambiente Chromium enx
 ```
 MiniDayZ.App.sln
 src/MiniDayZ.App/
-├── MainWindow.xaml(.cs)   # Host WebView2 + ponte IPC
+├── SaveSystem.cs          # Sistema de persistência em %LOCALAPPDATA%\MiniDayZ\Saves
+├── MainWindow.xaml(.cs)   # Host WebView2 + ponte IPC (saves, load, console)
 └── wwwroot/               # Jogo HTML5 (origem: github.com/NextDev65/MiniDayZ)
 ```
 
@@ -46,9 +47,16 @@ bloqueia por CORS em `file://` (origin `null`). Por isso a pasta física
 
 O perfil do WebView2 (saves em IndexedDB, cache) fica em `%LOCALAPPDATA%\MiniDayZ\WebView2`.
 
-## IPC (JS → C#)
+## IPC e Sistema de Saves (JS ↔ C#)
 
-O JS envia mensagens via `window.chrome.webview.postMessage(...)`; o C# as recebe em
-`WebMessageReceived` e registra com `Debug.WriteLine` (janela *Output* do Visual Studio).
-Teste inicial: `"TestIPC_Success"` disparado no `load` da página.
+O wrapper intercepta o armazenamento do jogo e comunica-se via IPC com o host .NET:
+1. **Hidratação pré-boot:** Antes de executar qualquer script da página, o C# injeta os saves salvos no disco em `window.__MDZ_SAVES__` via `AddScriptToExecuteOnDocumentCreatedAsync`.
+2. **Monkey Patch de `localStorage`:** O script em `wwwroot/index.html` sobrescreve `setItem`, `getItem`, `removeItem` e `clear`.
+   - `setItem(k, v)`: Atualiza a memória e emite `{ action: 'save', key, data }` para o C#.
+   - `getItem(k)`: Responde sincronamente da memória/disco hidratado e emite `{ action: 'load', key }` sob demanda se ausente.
+   - `removeItem(k)` / `clear()`: Envia `{ action: 'delete', key }`.
+3. **Backend nativo (`SaveSystem`):** Grava arquivos `.json` com escrita atômica (`.tmp` → replace) em `%LOCALAPPDATA%\MiniDayZ\Saves\[key].json`.
+4. **Disparo assíncrono:** Ao carregar via `action: 'load'`, o C# dispara `SaveLoaded` com `{ detail: { key, data } }` no JavaScript.
+5. **Teste de integridade:** Mensagem `"TestIPC_Success"` emitida no evento `load` da janela.
+
 

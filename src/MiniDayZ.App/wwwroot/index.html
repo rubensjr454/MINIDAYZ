@@ -40,6 +40,105 @@
     </style>
 	
 
+	<!-- MiniDayZ PC Port: saves via IPC (localStorage <-> %LOCALAPPDATA%\MiniDayZ\Saves). Deve rodar ANTES do c2runtime. -->
+	<script>
+	  (function () {
+	    if (!(window.chrome && window.chrome.webview)) return;
+
+	    var ipc = window.chrome.webview;
+	    var ls;
+	    try { ls = window.localStorage; } catch (e) { return; }
+
+	    var proto = Storage.prototype;
+	    var nativeGet = proto.getItem, nativeSet = proto.setItem,
+	        nativeRemove = proto.removeItem, nativeClear = proto.clear, nativeKey = proto.key;
+	    var has = Object.prototype.hasOwnProperty;
+
+	    // Cache síncrono hidratado pelo C# (AddScriptToExecuteOnDocumentCreated) antes deste script.
+	    var disk = window.__MDZ_SAVES__ || {};
+	    var requested = {};
+	    var pending = {};
+
+	    // Restaura no localStorage nativo o que existe no disco e foi perdido (perfil limpo/corrompido).
+	    for (var k in disk) {
+	      if (has.call(disk, k) && nativeGet.call(ls, k) === null) {
+	        try { nativeSet.call(ls, k, disk[k]); } catch (e) { }
+	      }
+	    }
+
+	    proto.setItem = function (key, value) {
+	      if (this === ls) {
+	        key = String(key); value = String(value);
+	        disk[key] = value;
+	        ipc.postMessage({ action: 'save', key: key, data: value });
+	      }
+	      return nativeSet.call(this, key, value);
+	    };
+
+	    proto.getItem = function (key) {
+	      var value = nativeGet.call(this, key);
+	      if (this === ls) {
+	        key = String(key);
+	        if (value === null && has.call(disk, key)) value = disk[key];
+	        if (value === null && !requested[key]) {
+	          requested[key] = true;
+	          ipc.postMessage({ action: 'load', key: key });
+	        }
+	      }
+	      return value;
+	    };
+
+	    proto.removeItem = function (key) {
+	      if (this === ls) {
+	        key = String(key);
+	        delete disk[key];
+	        ipc.postMessage({ action: 'delete', key: key });
+	      }
+	      return nativeRemove.call(this, key);
+	    };
+
+	    proto.clear = function () {
+	      if (this === ls) {
+	        var keys = Object.keys(disk);
+	        for (var i = 0; i < ls.length; i++) keys.push(nativeKey.call(ls, i));
+	        keys.forEach(function (key) {
+	          if (key !== null) ipc.postMessage({ action: 'delete', key: key });
+	        });
+	        disk = {};
+	      }
+	      return nativeClear.call(this);
+	    };
+
+	    // Resposta assíncrona do C# para action "load".
+	    window.addEventListener('SaveLoaded', function (e) {
+	      var d = e.detail || {};
+	      if (typeof d.key !== 'string') return;
+
+	      if (typeof d.data === 'string') {
+	        disk[d.key] = d.data;
+	        try { nativeSet.call(ls, d.key, d.data); } catch (err) { }
+	      }
+
+	      var callbacks = pending[d.key];
+	      if (callbacks) {
+	        delete pending[d.key];
+	        callbacks.forEach(function (cb) { cb(typeof d.data === 'string' ? d.data : null); });
+	      }
+	    });
+
+	    // API assíncrona explícita: MDZSaves.load('chave').then(data => ...)
+	    window.MDZSaves = {
+	      load: function (key) {
+	        key = String(key);
+	        return new Promise(function (resolve) {
+	          (pending[key] = pending[key] || []).push(resolve);
+	          ipc.postMessage({ action: 'load', key: key });
+	        });
+	      }
+	    };
+	  })();
+	</script>
+
 	<!-- MiniDayZ PC Port: remove a "cara de navegador" -->
 	<style>
 	  body, html { overflow: hidden; user-select: none; -webkit-user-drag: none; touch-action: none; }
