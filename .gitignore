@@ -1,0 +1,45 @@
+## .NET / Visual Studio
+[Bb]in/
+[Oo]bj/
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+[Ll]og/
+[Ll]ogs/
+artifacts/
+publish/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+*.rsuser
+.vs/
+.vscode/
+.idea/
+*.swp
+*.cache
+*.pdb
+*.ilk
+*.log
+*.tlog
+*.nupkg
+*.snupkg
+packages/
+project.lock.json
+project.fragment.lock.json
+TestResults/
+[Tt]est[Rr]esult*/
+*.VisualState.xml
+_ReSharper*/
+*.DotSettings.user
+
+## WebView2 user data (cache gerado em runtime)
+*.WebView2/
+WebView2Data/
+
+## Sistema
+Thumbs.db
+Desktop.ini
+.DS_Store
+
