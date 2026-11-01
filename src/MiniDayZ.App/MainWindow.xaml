@@ -6,7 +6,10 @@
         Width="1280" Height="720"
         WindowStartupLocation="CenterScreen"
         Background="Black"
-        UseLayoutRounding="True">
+        UseLayoutRounding="True"
+        KeyboardNavigation.TabNavigation="None"
+        KeyboardNavigation.DirectionalNavigation="None"
+        FocusManager.FocusedElement="{Binding ElementName=WebView}">
 
     <!-- Grid zerado: sem margens/padding, WebView2 ocupa 100% da área cliente -->
     <Grid Margin="0">

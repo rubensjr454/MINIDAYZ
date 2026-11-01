@@ -10,6 +10,9 @@ Documento de acompanhamento da evolução técnica do port de MiniDayZ para PC (
 |---|---|---|---|
 | **v0.1.0** | 30/10/2026 | **Ponto Zero:** Scaffolding WPF/.NET 8, importação do motor HTML5 (MDZ+ 1.2), otimizações agressivas do WebView2, contorno de CORS via host virtual, UI anti-browser e primeiro teste IPC. | Concluído ✅ |
 | **v0.2.0** | 30/10/2026 | **Evolução de Saves (Prioridade 2):** Backend nativo `SaveSystem.cs` (%LOCALAPPDATA%), gravação atômica, hidratação de boot assíncrona/síncrona, monkey patch de `localStorage` e IPC bidirecional. | Concluído ✅ |
+| **v0.3.0** | 30/10/2026 | **Save on Close & Controles PC (Prioridade 3):** Intercepção de fechamento da janela WPF para dump completo do `localStorage` antes do shutdown + mapeamento de teclas de atalho (`E` e `1`–`5`) simulando eventos no canvas. | Concluído ✅ |
+| **v0.3.1** | 31/10/2026 | **Bypass Nativo de Keybinds via CDP:** Substituição de eventos sintéticos DOM por injeção nativa de toque (`Input.dispatchTouchEvent`) via Chrome DevTools Protocol no C# e resolução de coordenadas reais no scene graph do Construct 2 (`t497` / `t6`). | Concluído ✅ |
+| **v0.4.0** | 31/10/2026 | **Módulo Isolado de Controles + Coleta e Troca de Arma:** Isolamento completo em `Controls/PcControlsManager.cs` e `wwwroot/controls/pc-controls.js`, adição de Coletar Itens (`F` → `t512`), Trocar Arma Branca/Fogo (`Q` → `t509`), Recarregar (`R` → `t522`) e Aba Visual `Controles [F1]` com indicadores de posição no HUD. | Concluído ✅ |
 
 ---
 
@@ -172,6 +175,30 @@ Na versão **v0.2.0**, o objetivo foi garantir persistência nativa e robusta do
   - `removeItem(k)` / `clear()`: Deleta dados locais e emite mensagens `{ action: 'delete', key: k }` para o host C#.
 - **Recuperação Automática:** Se o perfil do WebView2 for limpo ou corrompido, o script restaura automaticamente no `localStorage` nativo tudo o que estiver persistido no disco.
 - **API Adicional:** Exposição da interface `window.MDZSaves.load(key)` baseada em Promises.
+
+---
+
+## 🎮 Marco 3: Save on Close e Refatoração de Controles PC (v0.3.0)
+
+Na versão **v0.3.0**, adicionamos proteção contra perda de progresso ao fechar a janela e reduzimos a dependência do mouse mapeando atalhos de teclado para a interface do jogo.
+
+### 1. Save on Close (`MainWindow.xaml.cs`)
+- **Intercepção do Fechamento (`MainWindow_Closing`):**
+  - Assinatura do evento `this.Closing` controlada pela flag `_isSafeToClose`.
+  - Quando o usuário tenta fechar a janela (`_isSafeToClose == false`), o fechamento imediato é cancelado (`e.Cancel = true`) e o C# injeta via `ExecuteScriptAsync`:
+    ```javascript
+    window.chrome.webview.postMessage(JSON.stringify({ action: 'save_on_close', data: JSON.stringify(localStorage) }));
+    ```
+- **Persistência Final e Shutdown (`HandleMessageObject`):**
+  - Ao receber a action `save_on_close` no `WebMessageReceived`, o C# extrai todas as chaves/valores do snapshot do `localStorage`, grava cada entrada atomicamente no disco via `SaveSystem.Save(key, val)`, define `_isSafeToClose = true` e encerra o processo com segurança via `Application.Current.Shutdown()`.
+
+### 2. Refatoração de Controles — Hotbar e Tecla de Ação (`wwwroot/index.html`)
+- **Bloco `<script id="pc-keybinds">`:** Injetado antes do fechamento de `</body>`.
+- **Simulação de Clique/Toque (`simulateCanvasClick(xPercent, yPercent)`):**
+  - Localiza o elemento `<canvas>` (`#c2canvas`), calcula as coordenadas em pixels proporcionais ao `getBoundingClientRect()` atual da tela e dispara eventos sintéticos (`mousedown`/`touchstart` seguidos de `mouseup`/`click`/`touchend`).
+- **Mapeamento de Teclado (`keydown`):**
+  - **Tecla `E` / `e`:** Aciona `simulateCanvasClick(0.90, 0.85)` (botão de ação principal no canto inferior direito).
+  - **Teclas `1` a `5`:** Acionam os slots da hotbar no centro inferior da tela (`1` → `0.30, 0.90`, `2` → `0.40, 0.90`, `3` → `0.50, 0.90`, `4` → `0.60, 0.90`, `5` → `0.70, 0.90`).
 
 ---
 

@@ -1,74 +1,148 @@
-# MiniDayZ PC Port - Wrapper WPF + WebView2
+# MiniDayZ PC Port - Wrapper WPF + WebView2 (`v0.3.0`)
 
-Port para PC do jogo HTML5 **MiniDayZ**, empacotado em uma aplicação nativa Windows
-(WPF / .NET 8) que hospeda o motor web via **Microsoft Edge WebView2**.
+Port nativo para Windows do jogo HTML5 **MiniDayZ (Plus v1.2)**, empacotado em **WPF (.NET 8)** com motor web **Microsoft Edge WebView2** estritamente otimizado para rodar com baixo consumo de CPU e RAM em hardwares modestos (Intel Lakefield, Core i3 com 8 GB de RAM).
 
-## Objetivo
+---
 
-Rodar de forma extremamente leve em hardware modesto (Intel Lakefield híbrido,
-Core i3 com 8 GB de RAM). O WebView2 é instanciado com um ambiente Chromium enxuto:
-
-| Argumento | Finalidade |
-|---|---|
-| `--disable-features=Translate,OptimizationHints,MediaRouter` | Remove telemetria / tarefas de fundo |
-| `--disable-background-networking` | Sem rede em segundo plano |
-| `--disable-extensions` | Sem extensões |
-| `--force-gpu-rasterization` | Rasterização na GPU (alivia a CPU) |
-| `--enable-zero-copy` | Upload de texturas sem cópia extra |
-
-## Estrutura
+## 📁 Estrutura do Projeto
 
 ```
-MiniDayZ.App.sln
-EVOLUCAO.md                # Histórico completo de evolução técnica do projeto
-src/MiniDayZ.App/
-├── SaveSystem.cs          # Sistema de persistência em %LOCALAPPDATA%\MiniDayZ\Saves
-├── MainWindow.xaml(.cs)   # Host WebView2 + ponte IPC (saves, load, console)
-└── wwwroot/               # Jogo HTML5 (origem: github.com/NextDev65/MiniDayZ)
+MINI_DAYA_Z/
+├── MiniDayZ.App.sln            # Solução Visual Studio (.NET 8)
+├── README.md                   # Documentação da arquitetura e explicação detalhada do código
+├── EVOLUCAO.md                 # Histórico cronológico de marcos e versões (v0.1.0 -> v0.3.0)
+├── docs/screenshots/           # Capturas de tela de validação e diagnóstico
+└── src/MiniDayZ.App/
+    ├── MiniDayZ.App.csproj     # Configuração do compilador, GC enxuto e deploy de assets
+    ├── App.xaml / App.xaml.cs  # Ponto de entrada da aplicação WPF
+    ├── AssemblyInfo.cs         # Definições de tema e metadados do assembly
+    ├── SaveSystem.cs           # Gerenciador nativo de persistência em disco (%LOCALAPPDATA%)
+    ├── MainWindow.xaml         # Layout da janela principal (Grid zerado + WebView2)
+    ├── MainWindow.xaml.cs      # Inicialização do Chromium, ponte IPC e Save on Close
+    └── wwwroot/                # Motor HTML5 Construct 2 + injeções de código PC
+        ├── index.html          # Página raiz com Monkey Patch de saves, CSS anti-browser e Keybinds
+        ├── c2runtime.js        # Engine Construct 2 do jogo
+        ├── data.js             # Dados de objetos, mapas, sprites e lógica do jogo
+        ├── images/             # Texturas e spritesheets
+        └── media/              # Efeitos sonoros e músicas (.ogg / .m4a)
 ```
 
-## Build
+---
 
-Requisitos: .NET SDK 8+ e WebView2 Runtime (já incluso no Windows 10/11 atualizados).
+## 🧠 Explicação Detalhada do Código (Arquivo por Arquivo)
+
+### 1. [`src/MiniDayZ.App/MiniDayZ.App.csproj`](src/MiniDayZ.App/MiniDayZ.App.csproj)
+
+Define como o binário .NET 8 é compilado e otimizado para consumir o mínimo de memória:
+
+- **`ServerGarbageCollector = false` e `ConcurrentGarbageCollection = false`:** Usa o Garbage Collector em modo _Workstation_ não-concorrente, evitando criar threads extras em segundo plano que disputariam núcleos em CPUs fracas.
+- **`TieredPGO = true`:** Ativa _Profile-Guided Optimization_ dinâmico no JIT para acelerar os caminhos quentes de código.
+- **`InvariantGlobalization = true` e `SatelliteResourceLanguages = en`:** Descarta pacotes pesados de localização do .NET.
+- **`<Content Include="wwwroot\**\*" CopyToOutputDirectory="PreserveNewest" />`:** Garante que todos os 1.876 arquivos do jogo sejam copiados automaticamente para a pasta `bin/.../wwwroot/` ao compilar, apenas quando forem novos ou modificados.
+
+---
+
+### 2. [`src/MiniDayZ.App/MainWindow.xaml`](src/MiniDayZ.App/MainWindow.xaml)
+
+Define a camada visual nativa que hospeda o jogo:
+
+- **`Grid Margin="0"` e `Background="Black"`:** Remove bordas internas e evita flashes brancos durante o carregamento inicial.
+- **`<wv2:WebView2 x:Name="WebView" DefaultBackgroundColor="Black" />`:** Ocupa 100% da janela (`Stretch`). **Nota crítica:** A propriedade `Source` não é declarada no XAML porque isso forçaria o WebView2 a iniciar com configurações padrão antes das nossas flags de otimização entrarem em vigor.
+
+---
+
+### 3. [`src/MiniDayZ.App/MainWindow.xaml.cs`](src/MiniDayZ.App/MainWindow.xaml.cs)
+
+Coração da integração entre o Windows (.NET) e o motor HTML5:
+
+- **`BrowserArguments` (Flags do Chromium):**
+  | Flag | O que faz no código |
+  |---|---|
+  | `--disable-features=Translate,OptimizationHints,MediaRouter` | Corta serviços de tradução, telemetria e busca de dispositivos de mídia na rede. |
+  | `--disable-background-networking` | Bloqueia requisições automáticas do Chromium em segundo plano. |
+  | `--disable-extensions` | Desativa o subsistema de extensões. |
+  | `--force-gpu-rasterization` | Obriga a GPU a desenhar os quadros do canvas, aliviando o processador. |
+  | `--enable-zero-copy` | Transfere texturas para a GPU sem cópias intermediárias na RAM. |
+
+- **`InitializeAsync()`:**
+  1. Cria o ambiente customizado (`CoreWebView2Environment.CreateAsync`) apontando a pasta de perfil para `%LOCALAPPDATA%\MiniDayZ\WebView2` (garante permissão de escrita mesmo se instalado em `Program Files`).
+  2. Chama `ConfigureSettings()` para desligar comportamentos de navegador: menu de botão direito nativo, barra de status, zoom/pinch, preenchimento automático, atalhos de navegador e página de erro padrão.
+  3. **Hidratação Pré-Boot de Saves:** Lê todos os saves do disco (`SaveSystem.LoadAll()`) e injeta no navegador via `AddScriptToExecuteOnDocumentCreatedAsync("window.__MDZ_SAVES__ = ...")` antes de qualquer script da página existir.
+  4. **Mapeamento de Host Virtual (`SetVirtualHostNameToFolderMapping`):** Mapeia a pasta física `wwwroot` para `https://minidayz.example/`. Isso resolve o bloqueio de CORS do Chromium sobre requisições `XMLHttpRequest` (`data.js` e áudios) em protocolo `file://`, mantendo tudo 100% offline.
+
+- **`MainWindow_Closing()` e `_isSafeToClose` (Save on Close):**
+  - Intercepta o clique no botão de fechar a janela (`e.Cancel = true`).
+  - Executa um script no WebView2 (`ExecuteScriptAsync`) ordenando que o JavaScript envie um dump completo de todo o `localStorage` via IPC com a ação `save_on_close`.
+  - Caso o WebView2 ainda não tenha inicializado ou falhe, fecha imediatamente com segurança.
+
+- **`OnWebMessageReceived()` e `HandleMessageObject()` (Ponte IPC):**
+  - Valida se a mensagem veio estritamente de `https://minidayz.example/`.
+  - Processa as ações enviadas pelo JavaScript:
+    - **`save`:** Grava imediatamente uma chave/valor no disco via `SaveSystem.Save(key, data)`.
+    - **`load`:** Lê a chave do disco via `SaveSystem.Load(key)` e dispara `SendSaveLoadedAsync()`, emitindo o evento `CustomEvent('SaveLoaded')` de volta para o JavaScript.
+    - **`delete`:** Remove o arquivo `.json` correspondente do disco via `SaveSystem.Delete(key)`.
+    - **`save_on_close`:** Percorre todas as propriedades do `localStorage` enviadas no fechamento, salva cada uma em disco, marca `_isSafeToClose = true` e encerra o processo com `Application.Current.Shutdown()`.
+
+- **`AttachConsoleLoggingAsync()` (Somente em `DEBUG`):**
+  - Conecta-se ao protocolo CDP (_Chrome DevTools Protocol_) para espelhar `console.log`, erros de rede e exceções JavaScript diretamente na janela _Output_ do Visual Studio.
+
+---
+
+### 4. [`src/MiniDayZ.App/SaveSystem.cs`](src/MiniDayZ.App/SaveSystem.cs)
+
+Camada de persistência nativa no sistema de arquivos do Windows:
+
+- **`SaveDirectory`:** Aponta para `%LOCALAPPDATA%\MiniDayZ\Saves`.
+- **`Save(string key, string data)`:** Faz escrita atômica — primeiro grava em `[key].json.tmp` em UTF-8 sem BOM e depois executa `File.Move(..., overwrite: true)`. Isso impede que o save corrompa se o PC desligar ou o processo cair no meio da gravação.
+- **`Load(string key)`:** Lê e retorna o conteúdo de `[key].json` (ou `null` se não existir).
+- **`Delete(string key)`:** Exclui o arquivo `.json` do disco quando o jogo limpa uma chave.
+- **`LoadAll()`:** Carrega todos os arquivos `.json` da pasta em um dicionário para hidratar o jogo na inicialização.
+- **`GetPath(string key)`:** Sanitiza o nome da chave usando `Uri.EscapeDataString(key)`, bloqueando ataques de _Path Traversal_ (`../`) e caracteres proibidos pelo NTFS.
+
+---
+
+### 5. [`src/MiniDayZ.App/wwwroot/index.html`](src/MiniDayZ.App/wwwroot/index.html)
+
+Ponto de entrada HTML5 com três injeções customizadas para transformar o jogo web em jogo de PC:
+
+1. **Monkey Patch de `localStorage` (no topo do `<head>`):**
+   - Intercepta `Storage.prototype.setItem`, `getItem`, `removeItem` e `clear` antes do motor Construct 2 carregar.
+   - Usa o cache `window.__MDZ_SAVES__` injetado pelo C# para responder chamadas síncronas de `getItem` em tempo zero e restaura saves automaticamente se o cache do navegador for limpo.
+   - Toda chamada a `setItem` ou `removeItem` dispara mensagens IPC assíncronas (`save` / `delete`) para o C#.
+   - Expõe `window.MDZSaves.load(key)` retornando uma `Promise` resolvida quando o evento `SaveLoaded` chega do C#.
+
+2. **Blindagem de Interface Anti-Browser (no `<head>`):**
+   - **CSS:** `overflow: hidden; user-select: none; -webkit-user-drag: none; touch-action: none;` e `img { pointer-events: none; }` — impede barras de rolagem, seleção acidental de texto e arrasto de imagens.
+   - **JS:** Bloqueia o evento `contextmenu` (clique direito não abre menu de navegador) e envia `"TestIPC_Success"` no `load` para confirmar que a ponte IPC está ativa.
+
+3. **Mapeamento de Teclado para PC (`<script id="pc-keybinds">` antes de `</body>`):**
+   - **`simulateCanvasClick(xPercent, yPercent)`:** Localiza o `#c2canvas`, calcula a posição exata em pixels com base na porcentagem da largura/altura atual da janela (`getBoundingClientRect()`) e dispara eventos sintéticos de mouse (`mousedown` → `mouseup` → `click`) e toque (`touchstart` → `touchend`).
+   - **Listener `keydown` (ignora repetição automática `e.repeat`):**
+     - **Tecla `E`:** Dispara `simulateCanvasClick(0.90, 0.85)` — aciona o botão de ação principal no canto inferior direito.
+     - **Teclas `1` a `5`:** Disparam cliques nas coordenadas `(0.30, 0.90)` até `(0.70, 0.90)` — acionam diretamente os 5 slots da hotbar na parte inferior da tela.
+
+---
+
+## 🚀 Como Compilar e Rodar
+
+Pré-requisitos: **.NET 8 SDK** (ou superior) e **Microsoft Edge WebView2 Runtime** (incluso por padrão no Windows 10/11).
 
 ```powershell
+# Compilar em modo Release
 dotnet build MiniDayZ.App.sln -c Release
+
+# Executar a aplicação
 dotnet run --project src/MiniDayZ.App
 ```
 
-O conteúdo de `wwwroot/` é copiado automaticamente para a pasta do executável
-(`Content` + `PreserveNewest`).
-
-## Carregamento do jogo (host virtual)
-
-O runtime do Construct 2 carrega `data.js` e os áudios via `XMLHttpRequest`, que o Chromium
-bloqueia por CORS em `file://` (origin `null`). Por isso a pasta física
-`<exe>\wwwroot` é mapeada com `SetVirtualHostNameToFolderMapping` para
-`https://minidayz.example/`. A resolução é 100% local: sem servidor HTTP e sem rede.
-
-O perfil do WebView2 (saves em IndexedDB, cache) fica em `%LOCALAPPDATA%\MiniDayZ\WebView2`.
-
-## IPC e Sistema de Saves (JS ↔ C#)
-
-O wrapper intercepta o armazenamento do jogo e comunica-se via IPC com o host .NET:
-1. **Hidratação pré-boot:** Antes de executar qualquer script da página, o C# injeta os saves salvos no disco em `window.__MDZ_SAVES__` via `AddScriptToExecuteOnDocumentCreatedAsync`.
-2. **Monkey Patch de `localStorage`:** O script em `wwwroot/index.html` sobrescreve `setItem`, `getItem`, `removeItem` e `clear`.
-   - `setItem(k, v)`: Atualiza a memória e emite `{ action: 'save', key, data }` para o C#.
-   - `getItem(k)`: Responde sincronamente da memória/disco hidratado e emite `{ action: 'load', key }` sob demanda se ausente.
-   - `removeItem(k)` / `clear()`: Envia `{ action: 'delete', key }`.
-3. **Backend nativo (`SaveSystem`):** Grava arquivos `.json` com escrita atômica (`.tmp` → replace) em `%LOCALAPPDATA%\MiniDayZ\Saves\[key].json`.
-4. **Disparo assíncrono:** Ao carregar via `action: 'load'`, o C# dispara `SaveLoaded` com `{ detail: { key, data } }` no JavaScript.
-5. **Teste de integridade:** Mensagem `"TestIPC_Success"` emitida no evento `load` da janela.
+---
 
 ## Créditos e Agradecimentos
 
 Este projeto é um wrapper nativo que utiliza como base os arquivos e modificações desenvolvidos pela comunidade e pelos criadores originais:
 
-* **[Bohemia Interactive](https://www.bohemia.net/):** Desenvolvedora e criadora original do jogo **Mini DAYZ** (versão mobile e browser original 1.4.1).
-* **[NextDev65](https://github.com/NextDev65/MiniDayZ):** Repositório base utilizado para extração dos arquivos do jogo e preservação da versão web jogável no PC.
-* **Altero:** Criador do mod **Mini DayZ+ (MDZ+ v1.2)**, versão incorporada em `wwwroot` com melhorias de jogabilidade, suporte aprimorado a mouse/PC e rebalanceamento.
-* **Kev3232:** Criador do mod **Mini DayZ Reloaded 1.1**.
-* **meterpreter:** Pelo trabalho de engenharia reversa e exportação dos pacotes.
-
-
-
+- **[Bohemia Interactive](https://www.bohemia.net/):** Desenvolvedora e criadora original do jogo **Mini DAYZ** (versão mobile e browser original 1.4.1).
+- **[NextDev65](https://github.com/NextDev65/MiniDayZ):** Repositório base utilizado para extração dos arquivos do jogo e preservação da versão web jogável no PC.
+- **Altero:** Criador do mod **Mini DayZ+ (MDZ+ v1.2)**, versão incorporada em `wwwroot` com melhorias de jogabilidade, suporte aprimorado a mouse/PC e rebalanceamento.
+- **Kev3232:** Criador do mod **Mini DayZ Reloaded 1.1**.
+- **meterpreter:** Pelo trabalho de engenharia reversa e exportação dos pacotes.

@@ -4,12 +4,14 @@ using System.IO;
 using System.Text.Json;
 using System.Windows;
 using Microsoft.Web.WebView2.Core;
+using MiniDayZ.App.Controls;
 
 namespace MiniDayZ.App;
 
 public partial class MainWindow : Window
 {
     private bool _isSafeToClose = false;
+    private readonly PcControlsManager _controls;
 
     /// <summary>
     /// Flags do Chromium: remove telemetria/tarefas de fundo e empurra rasterização para a GPU.
@@ -27,7 +29,10 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        _controls = new PcControlsManager(WebView);
         this.Closing += MainWindow_Closing;
+        this.Activated += (_, _) => WebView.Focus();
+        this.PreviewKeyDown += (_, e) => _controls.TryHandlePreviewKeyDown(e);
         Loaded += async (_, _) => await InitializeAsync();
     }
 
@@ -82,6 +87,7 @@ public partial class MainWindow : Window
 
             // Ponte IPC (JS -> C#)
             core.WebMessageReceived += OnWebMessageReceived;
+            core.NavigationCompleted += (_, _) => WebView.Focus();
 
             // Hidrata os saves do disco ANTES de qualquer script da página (getItem é síncrono no JS).
             string savesJson = JsonSerializer.Serialize(SaveSystem.LoadAll());
@@ -186,43 +192,53 @@ public partial class MainWindow : Window
 
         string action = actionEl.GetString() ?? string.Empty;
 
+        if (_controls.TryHandleWebMessage(root, action))
+        {
+            return;
+        }
+
         if (action == "save_on_close")
         {
-            if (root.TryGetProperty("data", out JsonElement closeDataEl))
+            try
             {
-                if (closeDataEl.ValueKind == JsonValueKind.String)
+                if (root.TryGetProperty("data", out JsonElement closeDataEl))
                 {
-                    string rawStorage = closeDataEl.GetString() ?? string.Empty;
-                    if (!string.IsNullOrEmpty(rawStorage))
+                    if (closeDataEl.ValueKind == JsonValueKind.String)
                     {
-                        using var storageDoc = JsonDocument.Parse(rawStorage);
-                        if (storageDoc.RootElement.ValueKind == JsonValueKind.Object)
+                        string rawStorage = closeDataEl.GetString() ?? string.Empty;
+                        if (!string.IsNullOrEmpty(rawStorage))
                         {
-                            foreach (JsonProperty prop in storageDoc.RootElement.EnumerateObject())
+                            using var storageDoc = JsonDocument.Parse(rawStorage);
+                            if (storageDoc.RootElement.ValueKind == JsonValueKind.Object)
                             {
-                                string val = prop.Value.ValueKind == JsonValueKind.String
-                                    ? prop.Value.GetString()!
-                                    : prop.Value.GetRawText();
-                                SaveSystem.Save(prop.Name, val);
+                                foreach (JsonProperty prop in storageDoc.RootElement.EnumerateObject())
+                                {
+                                    string val = prop.Value.ValueKind == JsonValueKind.String
+                                        ? prop.Value.GetString()!
+                                        : prop.Value.GetRawText();
+                                    SaveSystem.Save(prop.Name, val);
+                                }
                             }
                         }
                     }
-                }
-                else if (closeDataEl.ValueKind == JsonValueKind.Object)
-                {
-                    foreach (JsonProperty prop in closeDataEl.EnumerateObject())
+                    else if (closeDataEl.ValueKind == JsonValueKind.Object)
                     {
-                        string val = prop.Value.ValueKind == JsonValueKind.String
-                            ? prop.Value.GetString()!
-                            : prop.Value.GetRawText();
-                        SaveSystem.Save(prop.Name, val);
+                        foreach (JsonProperty prop in closeDataEl.EnumerateObject())
+                        {
+                            string val = prop.Value.ValueKind == JsonValueKind.String
+                                ? prop.Value.GetString()!
+                                : prop.Value.GetRawText();
+                            SaveSystem.Save(prop.Name, val);
+                        }
                     }
                 }
             }
-
-            Debug.WriteLine("[MiniDayZ IPC] save_on_close concluído.");
-            _isSafeToClose = true;
-            Application.Current.Shutdown();
+            finally
+            {
+                Debug.WriteLine("[MiniDayZ IPC] save_on_close concluído.");
+                _isSafeToClose = true;
+                Application.Current.Shutdown();
+            }
             return;
         }
 
