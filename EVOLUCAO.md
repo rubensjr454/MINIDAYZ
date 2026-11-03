@@ -13,6 +13,8 @@ Documento de acompanhamento da evolução técnica do port de MiniDayZ para PC (
 | **v0.3.0** | 30/10/2026 | **Save on Close & Controles PC (Prioridade 3):** Intercepção de fechamento da janela WPF para dump completo do `localStorage` antes do shutdown + mapeamento de teclas de atalho (`E` e `1`–`5`) simulando eventos no canvas. | Concluído ✅ |
 | **v0.3.1** | 31/10/2026 | **Bypass Nativo de Keybinds via CDP:** Substituição de eventos sintéticos DOM por injeção nativa de toque (`Input.dispatchTouchEvent`) via Chrome DevTools Protocol no C# e resolução de coordenadas reais no scene graph do Construct 2 (`t497` / `t6`). | Concluído ✅ |
 | **v0.4.0** | 31/10/2026 | **Módulo Isolado de Controles + Coleta e Troca de Arma:** Isolamento completo em `Controls/PcControlsManager.cs` e `wwwroot/controls/pc-controls.js`, adição de Coletar Itens (`F` → `t512`), Trocar Arma Branca/Fogo (`Q` → `t509`), Recarregar (`R` → `t522`) e Aba Visual `Controles [F1]` com indicadores de posição no HUD. | Concluído ✅ |
+| **v0.4.1** | 01/11/2026 | **Sincronização Dinâmica de HUD e Resolução:** Injeção de `ResizeObserver` em `wwwroot/index.html` acionando `cr_sizeCanvas` e `window.dispatchEvent(new Event('resize'))` em tempo real ao redimensionar a janela WPF. | Concluído ✅ |
+| **v0.5.0** | 01/11/2026 | **Radar Tático & Companion Mobile LAN (Prioridade 09):** Extrator 1Hz no scene graph do Construct 2 (`radar-telemetry.js`), servidor LAN assíncrono em C# (`CompanionServer.cs`) via SSE, SPA Mobile-First em Canvas (`mobile-radar.html`), Waypoint bidirecional na borda da tela do PC e QR Code nativo na aba `Controles [F1]`. | Concluído ✅ |
 
 ---
 
@@ -23,6 +25,8 @@ MINI_DAYA_Z/
 ├── .gitignore                  # Regras para .NET, VS, bin/obj e perfis do WebView2
 ├── README.md                   # Documentação geral de compilação e execução
 ├── EVOLUCAO.md                 # Histórico completo de evolução técnica do projeto
+├── CONTROLES.md                # Arquitetura e mapeamento isolado de controles PC
+├── COMPANION.md                # Documentação do Radar Tático LAN e objetos Construct 2
 ├── MiniDayZ.App.sln            # Solução C# do projeto
 ├── docs/
 │   └── screenshots/            # Evidências visuais de execução e diagnósticos
@@ -33,10 +37,19 @@ MINI_DAYA_Z/
     ├── App.xaml / App.xaml.cs  # Ponto de entrada WPF
     ├── AssemblyInfo.cs         # Metadados e ThemeInfo
     ├── SaveSystem.cs           # Persistência atômica (.json em %LOCALAPPDATA%\MiniDayZ\Saves)
+    ├── Companion/
+    │   └── CompanionServer.cs  # Servidor LAN ultraleve (HTTP/1.1 + SSE + Waypoint reverso)
+    ├── Controls/
+    │   └── PcControlsManager.cs # Injeção nativa de toques via CDP para atalhos PC
     ├── MainWindow.xaml         # Janela com Grid zerado e host WebView2 em tela cheia
-    ├── MainWindow.xaml.cs      # Host Chromium otimizado, IPC de saves e DevTools logging
-    └── wwwroot/                # MiniDayZ Plus 1.2 (1.876 arquivos, ~27 MB)
-        ├── index.html          # HTML modificado com CSS nativo e monkey patch de saves
+    ├── MainWindow.xaml.cs      # Host Chromium otimizado, IPC de saves/telemetria e DevTools
+    └── wwwroot/                # MiniDayZ Plus 1.2 + Módulos PC Port
+        ├── index.html          # HTML com CSS nativo, ResizeObserver e monkey patch de saves
+        ├── companion/
+        │   ├── radar-telemetry.js  # Extrator 1Hz do Construct 2 + HUD Waypoint no PC
+        │   └── mobile-radar.html   # Interface Mobile-First em Canvas com filtros táticos
+        ├── controls/
+        │   └── pc-controls.js      # Teclas PC, aba Controles [F1] e QR Code nativo
         ├── c2runtime.js        # Engine Construct 2
         ├── data.js             # Lógica e definições do jogo
         ├── images/             # Texturas e spritesheets
@@ -199,6 +212,16 @@ Na versão **v0.3.0**, adicionamos proteção contra perda de progresso ao fecha
 - **Mapeamento de Teclado (`keydown`):**
   - **Tecla `E` / `e`:** Aciona `simulateCanvasClick(0.90, 0.85)` (botão de ação principal no canto inferior direito).
   - **Teclas `1` a `5`:** Acionam os slots da hotbar no centro inferior da tela (`1` → `0.30, 0.90`, `2` → `0.40, 0.90`, `3` → `0.50, 0.90`, `4` → `0.60, 0.90`, `5` → `0.70, 0.90`).
+
+---
+
+## 📡 Marco 4: Radar Tático & Companion Mobile LAN (v0.5.0)
+
+Na versão **v0.5.0** (Prioridade 09), foi implementado o sistema de segundo ecrã / telemóvel via rede Wi-Fi local (LAN) com custo quase nulo de CPU e memória na máquina anfitriã:
+
+- **Extrator de Planta Aérea & Telemetria 1Hz (`wwwroot/companion/radar-telemetry.js`):** Lê diretamente `cr_getC2Runtime()` apenas quando uma partida está ativa (`Map`, `Tutorial`, `Polygon`), dividindo a carga entre `companion_map_init` (enviado na carga da ilha com os Tilemaps reais `ground_lvl1..5`, areia, água e floresta via `tm.oF()`, telhados e sprites de `t1049`, muros/carros de rua, matriz `16x16` `t518`, o único *Secret Location* real da ilha via whitelist `EE_SECRET_DEFS` + `t915`, *Heli/Humvee Crashes* reais `t246`/`t441` e *Bunkers* `t785`) e `companion_tick` (`1000ms`, com coordenadas/status vitais de `t181`, veículos `t1067`, tendas e ameaças vivas em raio de `2600px`).
+- **Servidor LAN Assíncrono (`Companion/CompanionServer.cs`):** Descoberta automática do IPv4 LAN ativo (`192.168.x.x:8080`, fallback `127.0.0.1`), sockets nativos `.NET 8` sem exigir elevação UAC, entrega de texturas estáticas em cache (`GET /images/*`), streaming via **Server-Sent Events (`/events`)** e sincronização reversa **`POST /waypoint`** projetando seta direcional na borda da tela do PC.
+- **Visão de Satélite em `OffscreenCanvas` (`wwwroot/companion/mobile-radar.html` e `wwwroot/controls/pc-controls.js`):** Pré-renderiza toda a ilha (estradas conectadas, cruzamentos, telhados reais, florestas e grade `A1..P16`) numa camada estática `OffscreenCanvas`, despolui rótulos por nível de zoom/toque/hover e redesenha apenas a camada tática superior a `1Hz`.
 
 ---
 

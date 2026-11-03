@@ -1,0 +1,1894 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="mobile-web-app-capable" content="yes" />
+<title>MiniDayZ — Mapa Satélite &amp; Radar Tático</title>
+<style>
+  :root {
+    --bg: #0c1519;
+    --panel: rgba(13, 19, 15, 0.92);
+    --border: rgba(148, 180, 104, 0.45);
+    --accent: #aed581;
+    --gold: #ffd54f;
+    --danger: #ff5252;
+    --cyan: #4dd0e1;
+    --text: #e8efe2;
+    --muted: #9aa992;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    width: 100%; height: 100%; overflow: hidden;
+    background: var(--bg); color: var(--text);
+    font-family: Consolas, "Segoe UI", system-ui, sans-serif;
+    touch-action: none; user-select: none; -webkit-user-select: none;
+  }
+  #radar-canvas {
+    position: fixed; inset: 0; width: 100%; height: 100%; display: block;
+    background: #172a30;
+  }
+
+  /* Barra Superior de Telemetria */
+  #top-hud {
+    position: fixed; top: env(safe-area-inset-top, 6px); left: 26px; right: 8px;
+    display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+    padding: 6px 10px; z-index: 12; backdrop-filter: blur(6px);
+    box-shadow: 0 4px 16px rgba(0,0,0,0.68);
+  }
+  .status-grp { display: flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 700; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: #ff9800; box-shadow: 0 0 6px #ff9800; flex-shrink: 0; }
+  .dot.online { background: #76ff03; box-shadow: 0 0 8px #76ff03; }
+  .tex-pill {
+    font-size: 10px; font-weight: 700; color: #b0bec5;
+    background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.14);
+    border-radius: 4px; padding: 1px 5px; display: none;
+  }
+  .vitals { display: flex; align-items: center; gap: 6px; font-size: 11px; flex-wrap: wrap; }
+  .vital-pill {
+    background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 4px; padding: 2px 6px; font-weight: 700;
+  }
+  .v-hp { color: #ff8a80; }
+  .v-wt { color: #80d8ff; }
+  .v-fd { color: #ffd180; }
+  .v-tm { color: #ccff90; }
+  .v-sec { color: #dce775; border-color: rgba(220, 231, 117, 0.35); }
+
+  /* Botões Flutuantes (Direita) */
+  #fab-col {
+    position: fixed; right: 10px; top: 68px;
+    display: flex; flex-direction: column; gap: 7px; z-index: 12;
+  }
+  .tac-btn {
+    background: var(--panel); color: var(--text); border: 1px solid var(--border);
+    border-radius: 7px; padding: 8px 10px; font-size: 11.5px; font-weight: 700;
+    cursor: pointer; box-shadow: 0 3px 10px rgba(0,0,0,0.62); font-family: inherit;
+    text-align: left;
+  }
+  .tac-btn.active { border-color: var(--accent); color: var(--accent); background: rgba(34, 48, 28, 0.95); }
+  .tac-btn.wp-clear { border-color: rgba(255, 213, 79, 0.65); color: var(--gold); display: none; }
+
+  /* Card Flutuante de Inspeção ao Tocar em um Ícone/Ponto */
+  #poi-card {
+    position: fixed; left: 30px; right: 98px; top: 68px;
+    display: none; align-items: center; justify-content: space-between; gap: 8px;
+    background: rgba(12, 18, 14, 0.94); border: 1px solid var(--gold);
+    border-radius: 8px; padding: 6px 10px; z-index: 12;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.75); font-size: 11.5px;
+  }
+  #poi-card-info { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  #poi-card-title { font-weight: 700; color: var(--gold); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #poi-card-sub { font-size: 10.5px; color: var(--muted); }
+  #poi-card-actions { display: flex; align-items: center; gap: 5px; flex-shrink: 0; }
+  .mini-btn {
+    background: rgba(77, 208, 225, 0.14); color: var(--cyan); border: 1px solid rgba(77, 208, 225, 0.55);
+    border-radius: 5px; padding: 4px 7px; font-size: 10.5px; font-weight: 700; cursor: pointer; font-family: inherit;
+  }
+  .mini-btn.close { background: rgba(255,255,255,0.06); color: var(--muted); border-color: rgba(255,255,255,0.2); }
+
+  /* Gaveta Inferior de Filtros Táticos */
+  #bottom-drawer {
+    position: fixed; left: 26px; right: 8px; bottom: calc(env(safe-area-inset-bottom, 6px) + 6px);
+    background: var(--panel); border: 1px solid var(--border); border-radius: 9px;
+    padding: 8px 11px; z-index: 12; box-shadow: 0 -4px 18px rgba(0,0,0,0.72);
+  }
+  #drawer-head {
+    display: flex; justify-content: space-between; align-items: center;
+    cursor: pointer; font-size: 11.5px; font-weight: 700; color: var(--accent);
+  }
+  #filters-body {
+    margin-top: 8px; padding-top: 7px; border-top: 1px solid rgba(140, 172, 98, 0.25);
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(205px, 1fr)); gap: 5px 12px;
+  }
+  #bottom-drawer.collapsed #filters-body { display: none; }
+  .flt-item {
+    display: flex; align-items: center; gap: 8px; font-size: 11.5px; cursor: pointer;
+    padding: 2px 2px;
+  }
+  .flt-item input { width: 15px; height: 15px; accent-color: #9ccc65; cursor: pointer; flex-shrink: 0; }
+  .badge-gold { color: var(--gold); font-weight: 700; }
+  .badge-crash { color: #ff8a65; font-weight: 700; }
+  .badge-lmk { color: #dce775; font-weight: 700; }
+  .badge-threat { color: var(--danger); font-weight: 700; }
+  .badge-quest { color: var(--cyan); font-weight: 700; }
+  .badge-wp { color: var(--cyan); font-weight: 700; }
+  .v-qst { color: #80d8ff; border-color: rgba(77, 208, 225, 0.45); display: none; }
+
+  #waiting-banner {
+    position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+    background: rgba(12, 16, 12, 0.93); border: 1px solid var(--border); border-radius: 10px;
+    padding: 16px 20px; text-align: center; z-index: 6; max-width: 88vw; pointer-events: none;
+  }
+  #waiting-banner h2 { font-size: 14px; color: var(--accent); margin-bottom: 6px; }
+  #waiting-banner p { font-size: 12px; color: var(--muted); line-height: 1.45; }
+</style>
+</head>
+<body>
+  <canvas id="radar-canvas"></canvas>
+
+  <div id="top-hud">
+    <div class="status-grp">
+      <span id="conn-dot" class="dot"></span>
+      <span id="hud-title">CONECTANDO AO PC...</span>
+      <span id="tex-status" class="tex-pill">SATÉLITE HD</span>
+    </div>
+    <div class="vitals">
+      <span class="vital-pill v-hp" id="v-hp">❤ --%</span>
+      <span class="vital-pill v-wt" id="v-wt">💧 --%</span>
+      <span class="vital-pill v-fd" id="v-fd">🥫 --%</span>
+      <span class="vital-pill v-tm" id="v-tm">🌡 --</span>
+      <span class="vital-pill v-sec" id="v-pos">SETOR --</span>
+      <span class="vital-pill v-qst" id="v-qst">📜 MISSÃO</span>
+    </div>
+  </div>
+
+  <div id="poi-card">
+    <div id="poi-card-info">
+      <div id="poi-card-title">Ponto Tático</div>
+      <div id="poi-card-sub">Setor -- • --m</div>
+    </div>
+    <div id="poi-card-actions">
+      <button type="button" class="mini-btn" id="btn-poi-wp">📍 Waypoint</button>
+      <button type="button" class="mini-btn close" id="btn-poi-close">✕</button>
+    </div>
+  </div>
+
+  <div id="fab-col">
+    <button type="button" class="tac-btn active" id="btn-follow">🎯 Seguir</button>
+    <button type="button" class="tac-btn" id="btn-fit">🗺️ Ilha</button>
+    <button type="button" class="tac-btn" id="btn-zoom-in">＋ Zoom</button>
+    <button type="button" class="tac-btn" id="btn-zoom-out">－ Zoom</button>
+    <button type="button" class="tac-btn wp-clear" id="btn-clear-wp">✕ Limpar WP</button>
+  </div>
+
+  <div id="waiting-banner">
+    <h2>MAPA DE SATÉLITE &amp; RADAR PRONTO</h2>
+    <p>Inicie ou carregue uma partida no MiniDayZ no PC.<br/>A planta aérea detalhada da ilha e a telemetria 1Hz serão sincronizadas automaticamente.</p>
+  </div>
+
+  <div id="bottom-drawer" class="collapsed">
+    <div id="drawer-head">
+      <span>CAMADAS DO SATÉLITE &amp; FILTROS TÁTICOS</span>
+      <span id="drawer-toggle-lbl">[Expandir ▲]</span>
+    </div>
+    <div id="filters-body">
+      <label class="flt-item">
+        <input type="checkbox" id="flt-secrets" checked />
+        <span class="badge-gold">★ Secret Location (1/Ilha) &amp; Bunkers</span>
+      </label>
+      <label class="flt-item">
+        <input type="checkbox" id="flt-crashes" checked />
+        <span class="badge-crash">🚁 Heli Crashes, Veículos &amp; Tendas</span>
+      </label>
+      <label class="flt-item">
+        <input type="checkbox" id="flt-landmarks" checked />
+        <span class="badge-lmk">🏛️ Pontos de Referência (Igreja, Hosp., Mil.)</span>
+      </label>
+      <label class="flt-item">
+        <input type="checkbox" id="flt-threats" checked />
+        <span class="badge-threat">⚠️ Radar de Ameaças Próximas</span>
+      </label>
+      <label class="flt-item">
+        <input type="checkbox" id="flt-quests" checked />
+        <span class="badge-quest">❗ Missões &amp; Sobreviventes Neutros</span>
+      </label>
+      <label class="flt-item">
+        <input type="checkbox" id="flt-waypoint" checked />
+        <span class="badge-wp">📍 Marcar Waypoint no PC ao tocar no mapa</span>
+      </label>
+    </div>
+  </div>
+
+<script>
+(function () {
+  'use strict';
+
+  var PX_PER_METER = 22;
+  var LABEL_ZOOM_THRESHOLD = 0.095; // Oculta rótulos fixos em zoom distante para nunca tampar ruas/prédios
+  var LANDMARK_BADGE_ZOOM = 0.048;
+  var MAX_STATIC_DIM = 2688; // Alta definição aérea mantendo baixo consumo de VRAM em celulares
+
+  var ROAD_TILE_INDICES = {
+    0: 1, 1: 1, 2: 1, 4: 1, 5: 1, 7: 1, 8: 1, 9: 1, 10: 1, 11: 1, 12: 1, 15: 1, 16: 1, 20: 1
+  };
+
+  var LANDMARK_STYLE = {
+    mil:    { icon: '★', color: '#ff6e6e', stroke: '#c62828', prio: 3 },
+    med:    { icon: '✚', color: '#4dd0e1', stroke: '#00838f', prio: 3 },
+    ch:     { icon: '⛪', color: '#fff176', stroke: '#f9a825', prio: 3 },
+    castle: { icon: '🏰', color: '#ffe082', stroke: '#ff8f00', prio: 3 },
+    pol:    { icon: '🛡', color: '#9fa8da', stroke: '#3949ab', prio: 4 },
+    fire:   { icon: '🚒', color: '#ff8a65', stroke: '#d84315', prio: 4 },
+    gas:    { icon: '⛽', color: '#ffb74d', stroke: '#ef6c00', prio: 4 },
+    gun:    { icon: '🎯', color: '#ce93d8', stroke: '#8e24aa', prio: 4 },
+    shop:   { icon: '🛒', color: '#bcaaa4', stroke: '#5d4037', prio: 5 },
+    school: { icon: '🏫', color: '#b0bec5', stroke: '#455a64', prio: 5 },
+    pump:   { icon: '💧', color: '#4fc3f7', stroke: '#0277bd', prio: 5 }
+  };
+
+  var canvas = document.getElementById('radar-canvas');
+  var ctx = canvas.getContext('2d', { alpha: false });
+
+  // Camada estática pré-renderizada em OffscreenCanvas (zero custo por frame de 1Hz)
+  var staticLayer = createOffscreenSurface(512, 512);
+  var staticCtx = staticLayer.getContext('2d', { alpha: false });
+  var staticScale = 0.13;
+
+  var imgCache = {};       // filename -> { status: 'loading'|'ok'|'err', img: HTMLImageElement }
+  var tileSliceCache = {}; // key -> Canvas/OffscreenCanvas de tile 60x60 já rotacionado/espelhado
+  var rebakeTimer = 0;
+
+  var mapData = null;
+  var landmarks = [];      // Pontos de referência extraídos dos prédios principais (agrupados por proximidade)
+  var tickData = null;
+  var waypoint = null;
+  var sseConnected = false;
+
+  var hoveredPoi = null;
+  var selectedPoi = null;
+  var interactiveTargets = []; // Lista da última frame para hit-test instantâneo de mouse/toque
+
+  var filters = {
+    secrets: true,
+    crashes: true,
+    landmarks: true,
+    quests: true,
+    threats: true,
+    waypointTap: true
+  };
+
+  var cam = {
+    x: 8925,
+    y: 10000,
+    zoom: 0.045,
+    follow: true,
+    initialized: false
+  };
+
+  var connDot = document.getElementById('conn-dot');
+  var hudTitle = document.getElementById('hud-title');
+  var texStatus = document.getElementById('tex-status');
+  var elHp = document.getElementById('v-hp');
+  var elWt = document.getElementById('v-wt');
+  var elFd = document.getElementById('v-fd');
+  var elTm = document.getElementById('v-tm');
+  var elPos = document.getElementById('v-pos');
+  var elQst = document.getElementById('v-qst');
+  var waitBanner = document.getElementById('waiting-banner');
+  var btnFollow = document.getElementById('btn-follow');
+  var btnClearWp = document.getElementById('btn-clear-wp');
+  var drawer = document.getElementById('bottom-drawer');
+  var drawerToggleLbl = document.getElementById('drawer-toggle-lbl');
+  var poiCard = document.getElementById('poi-card');
+  var poiCardTitle = document.getElementById('poi-card-title');
+  var poiCardSub = document.getElementById('poi-card-sub');
+
+  function createOffscreenSurface(w, h) {
+    if (typeof OffscreenCanvas !== 'undefined') {
+      try {
+        return new OffscreenCanvas(w, h);
+      } catch (e) {}
+    }
+    var c = document.createElement('canvas');
+    c.width = w;
+    c.height = h;
+    return c;
+  }
+
+  function resizeSurface(surf, w, h) {
+    if (surf.width !== w) surf.width = w;
+    if (surf.height !== h) surf.height = h;
+  }
+
+  function resizeViewport() {
+    var dpr = Math.min(window.devicePixelRatio || 1, 2);
+    canvas.width = Math.max(1, Math.floor(window.innerWidth * dpr));
+    canvas.height = Math.max(1, Math.floor(window.innerHeight * dpr));
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  window.addEventListener('resize', resizeViewport);
+  resizeViewport();
+
+  function getGridSpec() {
+    if (mapData && mapData.blocks && mapData.blocks.cols > 0 && mapData.blocks.rows > 0) {
+      return {
+        cols: mapData.blocks.cols,
+        rows: mapData.blocks.rows,
+        originX: mapData.blocks.originX,
+        originY: mapData.blocks.originY,
+        cellW: mapData.blocks.blockPx || 1020,
+        cellH: mapData.blocks.blockPx || 1020
+      };
+    }
+    var mw = (mapData && mapData.width) || 17850;
+    var mh = (mapData && mapData.height) || 20000;
+    var cols = Math.max(4, Math.min(16, Math.round(mw / 1020) || 10));
+    var rows = Math.max(4, Math.min(18, Math.round(mh / 1020) || 10));
+    return {
+      cols: cols,
+      rows: rows,
+      originX: 0,
+      originY: 0,
+      cellW: mw / cols,
+      cellH: mh / rows
+    };
+  }
+
+  function colLetters(c) {
+    if (c < 26) return String.fromCharCode(65 + c);
+    return String.fromCharCode(65 + Math.floor(c / 26) - 1) + String.fromCharCode(65 + (c % 26));
+  }
+
+  function sectorLabel(wx, wy) {
+    var g = getGridSpec();
+    var cx = Math.max(0, Math.min(g.cols - 1, Math.floor((wx - g.originX) / g.cellW)));
+    var cy = Math.max(0, Math.min(g.rows - 1, Math.floor((wy - g.originY) / g.cellH)));
+    return colLetters(cx) + (cy + 1);
+  }
+
+  function fitIsland() {
+    if (!mapData) return;
+    var vw = Math.max(200, window.innerWidth - 36);
+    var vh = Math.max(200, window.innerHeight - 135);
+    var zx = vw / (mapData.width * 1.03);
+    var zy = vh / (mapData.height * 1.03);
+    cam.zoom = Math.max(0.014, Math.min(zx, zy));
+    cam.x = mapData.width * 0.5;
+    cam.y = mapData.height * 0.5;
+  }
+
+  // =========================================================================
+  // CARREGAMENTO ASSÍNCRONO DE TEXTURAS REAIS DO JOGO (/images/*)
+  // =========================================================================
+  function scheduleRebake() {
+    if (rebakeTimer) return;
+    rebakeTimer = window.setTimeout(function () {
+      rebakeTimer = 0;
+      bakeStaticMap();
+    }, 110);
+  }
+
+  function ensureMapTextures(data) {
+    if (!data || !data.images || !data.images.length) return;
+    var pending = 0;
+    var loaded = 0;
+
+    for (var i = 0; i < data.images.length; i++) {
+      var fn = data.images[i];
+      if (!fn) continue;
+      var entry = imgCache[fn];
+      if (entry) {
+        if (entry.status === 'ok') loaded++;
+        else if (entry.status === 'loading') pending++;
+        continue;
+      }
+
+      pending++;
+      (function (fileName) {
+        var rec = { status: 'loading', img: null };
+        imgCache[fileName] = rec;
+        var im = new Image();
+        im.decoding = 'async';
+        im.onload = function () {
+          rec.status = 'ok';
+          rec.img = im;
+          updateTextureBadge();
+          scheduleRebake();
+        };
+        im.onerror = function () {
+          rec.status = 'err';
+          updateTextureBadge();
+        };
+        im.src = '/images/' + encodeURIComponent(fileName);
+      })(fn);
+    }
+
+    updateTextureBadge();
+    if (pending === 0 && loaded > 0) {
+      // Já estavam todas em cache
+      texStatus.style.display = 'inline-block';
+      texStatus.textContent = 'SATÉLITE HD';
+    }
+  }
+
+  function updateTextureBadge() {
+    if (!mapData || !mapData.images || !mapData.images.length) {
+      texStatus.style.display = 'none';
+      return;
+    }
+    var ok = 0;
+    var loading = 0;
+    for (var i = 0; i < mapData.images.length; i++) {
+      var st = imgCache[mapData.images[i]];
+      if (!st || st.status === 'loading') loading++;
+      else if (st.status === 'ok') ok++;
+    }
+    texStatus.style.display = 'inline-block';
+    if (loading > 0) {
+      texStatus.textContent = 'TEXTURAS ' + ok + '/' + mapData.images.length;
+    } else {
+      texStatus.textContent = 'SATÉLITE HD';
+    }
+  }
+
+  function getLoadedImgByIdx(imgIdx) {
+    if (!mapData || !mapData.images || imgIdx < 0 || imgIdx >= mapData.images.length) return null;
+    var fn = mapData.images[imgIdx];
+    var rec = imgCache[fn];
+    return (rec && rec.status === 'ok') ? rec.img : null;
+  }
+
+  function getLoadedImgByName(fn) {
+    if (!fn) return null;
+    var rec = imgCache[fn];
+    return (rec && rec.status === 'ok') ? rec.img : null;
+  }
+
+  // Recorta e transforma um tile do Construct 2 (id + flags h/v/d) exatamente como g.Ps / g.zq do c2runtime.js
+  function getTileSliceSurface(imgIdx, img, tileId, flipH, flipV, flipD, tw, th, ox, oy, spx, spy) {
+    var cacheKey = imgIdx + ':' + tileId + ':' + (flipH ? 1 : 0) + (flipV ? 1 : 0) + (flipD ? 1 : 0) + ':' + tw + 'x' + th;
+    if (tileSliceCache[cacheKey] !== undefined) return tileSliceCache[cacheKey];
+
+    // Mapeia índice linear do tile (row-major na spritesheet)
+    var curIdx = 0;
+    var sx = -1;
+    var sy = -1;
+    for (var y = oy; y + th <= img.height; y += th + spy) {
+      for (var x = ox; x + tw <= img.width; x += tw + spx) {
+        if (curIdx === tileId) {
+          sx = x;
+          sy = y;
+          break;
+        }
+        curIdx++;
+      }
+      if (sx >= 0) break;
+    }
+
+    if (sx < 0) {
+      tileSliceCache[cacheKey] = null;
+      return null;
+    }
+
+    var surf = createOffscreenSurface(tw, th);
+    var p = surf.getContext('2d');
+    p.save();
+    if (flipH) {
+      if (flipV) {
+        if (flipD) {
+          p.rotate(Math.PI / 2);
+          p.scale(-1, 1);
+        } else {
+          p.scale(-1, -1);
+        }
+        p.translate(-tw, -th);
+      } else if (flipD) {
+        p.rotate(Math.PI / 2);
+        p.translate(0, -th);
+      } else {
+        p.scale(-1, 1);
+        p.translate(-tw, 0);
+      }
+    } else if (flipV) {
+      if (flipD) {
+        p.rotate(-Math.PI / 2);
+        p.translate(-tw, 0);
+      } else {
+        p.scale(1, -1);
+        p.translate(0, -th);
+      }
+    } else if (flipD) {
+      p.scale(-1, 1);
+      p.rotate(Math.PI / 2);
+    }
+    p.drawImage(img, sx, sy, tw, th, 0, 0, tw, th);
+    p.restore();
+
+    tileSliceCache[cacheKey] = surf;
+    return surf;
+  }
+
+  function drawSpriteInstance(sCtx, sprIdx, x, y, w, h, angle) {
+    if (!mapData || !mapData.sprites || sprIdx < 0 || sprIdx >= mapData.sprites.length) return false;
+    var spr = mapData.sprites[sprIdx];
+    var img = getLoadedImgByIdx(spr[0]);
+    if (!img) return false;
+
+    var sx = spr[1];
+    var sy = spr[2];
+    var sw = spr[3];
+    var sh = spr[4];
+    var ox = spr[5];
+    var oy = spr[6];
+    if (sw <= 0 || sh <= 0) return false;
+
+    var signX = w < 0 ? -1 : 1;
+    var signY = h < 0 ? -1 : 1;
+    var aw = Math.abs(w);
+    var ah = Math.abs(h);
+    if (aw <= 0 || ah <= 0) return false;
+
+    sCtx.save();
+    sCtx.translate(x, y);
+    if (angle) sCtx.rotate(angle);
+    if (signX < 0 || signY < 0) sCtx.scale(signX, signY);
+    sCtx.drawImage(img, sx, sy, sw, sh, -ox * aw, -oy * ah, aw, ah);
+    sCtx.restore();
+    return true;
+  }
+
+  // Extrai pontos de referência nomeados (Igreja, Hospital, Base Militar, Posto...) agrupando barracas vizinhas
+  function buildLandmarksIndex(data) {
+    landmarks = [];
+    if (!data || !data.buildings) return;
+    var blds = data.buildings;
+    for (var i = 0; i < blds.length; i++) {
+      var b = blds[i];
+      var kind = b[5];
+      var lbl = b[7];
+      var st = LANDMARK_STYLE[kind];
+      if (!st || !lbl) continue;
+
+      var bx = b[0];
+      var by = b[1];
+      var minDist = kind === 'mil' ? 520 : (kind === 'pump' ? 360 : 280);
+      var d2Max = minDist * minDist;
+      var merged = false;
+      for (var k = 0; k < landmarks.length; k++) {
+        if (landmarks[k].kind === kind) {
+          var dx = landmarks[k].x - bx;
+          var dy = landmarks[k].y - by;
+          if (dx * dx + dy * dy <= d2Max) {
+            if (kind === 'mil' && landmarks[k].label !== 'Base Militar') {
+              landmarks[k].label = 'Base Militar';
+            }
+            merged = true;
+            break;
+          }
+        }
+      }
+      if (!merged) {
+        landmarks.push({
+          x: bx,
+          y: by,
+          kind: kind,
+          label: lbl,
+          icon: st.icon,
+          color: st.color,
+          stroke: st.stroke,
+          prio: st.prio
+        });
+      }
+    }
+  }
+
+  // =========================================================================
+  // BAKE DA VISÃO DE SATÉLITE EM OFFSCREENCANVAS (EXECUTADO APENAS NA CARGA!)
+  // =========================================================================
+  function bakeStaticMap() {
+    if (!mapData) return;
+    var mw = mapData.width || 17850;
+    var mh = mapData.height || 20000;
+    staticScale = Math.min(0.15, MAX_STATIC_DIM / Math.max(mw, mh));
+
+    var sw = Math.max(256, Math.round(mw * staticScale));
+    var sh = Math.max(256, Math.round(mh * staticScale));
+    resizeSurface(staticLayer, sw, sh);
+
+    staticCtx.save();
+    staticCtx.imageSmoothingEnabled = true;
+    staticCtx.scale(staticScale, staticScale);
+
+    var isWinter = (mapData.island === 5) || (mapData.baseTileImg && mapData.baseTileImg.indexOf('lvl5') >= 0);
+
+    // 1. Oceano costeiro profundo
+    staticCtx.fillStyle = '#294344';
+    staticCtx.fillRect(0, 0, mw, mh);
+
+    // 2. Solo base da ilha (textura real tile[6] de grama/neve se carregada, ou tom topográfico realista)
+    var baseImg = getLoadedImgByName(mapData.baseTileImg);
+    if (baseImg && baseImg.width >= 120 && baseImg.height >= 120) {
+      var grassTile = createOffscreenSurface(60, 60);
+      var gCtx = grassTile.getContext('2d');
+      gCtx.drawImage(baseImg, 60, 60, 60, 60, 0, 0, 60, 60);
+      var grassPat = staticCtx.createPattern(grassTile, 'repeat');
+      staticCtx.fillStyle = grassPat || (isWinter ? '#cfd6d8' : '#666450');
+    } else {
+      staticCtx.fillStyle = isWinter ? '#cfd6d8' : '#62654c';
+    }
+    staticCtx.fillRect(0, 0, mw, mh);
+
+    // 3. Terreno global RLE + Malha Viária Procedural 16x16 (renderiza 100% da ilha logo no boot!)
+    var ter = mapData.terrain;
+    if (ter && ter.rle && ter.cols > 0 && ter.rows > 0) {
+      var cellPx = ter.cellPx || 120;
+      var palette = {
+        1: isWinter ? '#5d6b66' : '#2d3d25', // Floresta densa
+        2: isWinter ? '#b6bcc0' : '#a19368', // Praia / Areia
+        3: '#294344',                        // Água / Oceano / Lagos
+        4: '#6e695d',                        // Rede de Estradas Global
+        5: '#272030'                         // Subsolo Bunker
+      };
+      var chunks = ter.rle.split(',');
+      var idx = 0;
+      for (var rli = 0; rli < chunks.length; rli++) {
+        var pair = chunks[rli].split(':');
+        var cnt = parseInt(pair[0], 10) || 0;
+        var code = parseInt(pair[1], 10) || 0;
+        var fill = palette[code];
+        if (fill && code !== 4) {
+          staticCtx.fillStyle = fill;
+          var rem = cnt;
+          var pos = idx;
+          while (rem > 0) {
+            var r = Math.floor(pos / ter.cols);
+            var c = pos % ter.cols;
+            var span = Math.min(rem, ter.cols - c);
+            staticCtx.fillRect(c * cellPx, r * cellPx, span * cellPx + 1, cellPx + 1);
+            pos += span;
+            rem -= span;
+          }
+        }
+        idx += cnt;
+      }
+    }
+
+    // 3b. Estradas Globais da Matriz Procedural (t518 + t514 + t703) cobrindo 100% da ilha antes do streaming
+    var blk = mapData.blocks;
+    if (blk && blk.roads && blk.roads.length) {
+      staticCtx.save();
+      staticCtx.lineCap = 'round';
+      staticCtx.lineJoin = 'round';
+
+      // Acostamento escuro
+      staticCtx.strokeStyle = 'rgba(34, 32, 27, 0.85)';
+      staticCtx.lineWidth = 148;
+      staticCtx.beginPath();
+      for (var ri0 = 0; ri0 < blk.roads.length; ri0++) {
+        var sg0 = blk.roads[ri0];
+        staticCtx.moveTo(sg0[0], sg0[1]);
+        staticCtx.lineTo(sg0[2], sg0[3]);
+      }
+      staticCtx.stroke();
+
+      // Leito asfaltado/calçado da estrada
+      staticCtx.strokeStyle = isWinter ? '#8b8e8d' : '#787264';
+      staticCtx.lineWidth = 116;
+      staticCtx.beginPath();
+      for (var ri1 = 0; ri1 < blk.roads.length; ri1++) {
+        var sg1 = blk.roads[ri1];
+        staticCtx.moveTo(sg1[0], sg1[1]);
+        staticCtx.lineTo(sg1[2], sg1[3]);
+      }
+      staticCtx.stroke();
+      staticCtx.restore();
+    }
+
+    // 4. Tiled Backgrounds reais (Água costeira t976, Pontes asfaltadas t974, Heliponto t1002)
+    var tbgs = mapData.tiledBgs || [];
+    for (var tbi = 0; tbi < tbgs.length; tbi++) {
+      var tb = tbgs[tbi];
+      var tbImg = getLoadedImgByIdx(tb[0]);
+      var tx = tb[1];
+      var ty = tb[2];
+      var twBg = tb[3];
+      var thBg = tb[4];
+      var tAng = tb[5] || 0;
+      var tOx = typeof tb[6] === 'number' ? tb[6] : 0;
+      var tOy = typeof tb[7] === 'number' ? tb[7] : 0;
+
+      staticCtx.save();
+      staticCtx.translate(tx, ty);
+      if (tAng) staticCtx.rotate(tAng);
+      staticCtx.translate(-tOx * twBg, -tOy * thBg);
+      if (tbImg) {
+        var tbPat = staticCtx.createPattern(tbImg, 'repeat');
+        staticCtx.fillStyle = tbPat || '#5c5850';
+      } else {
+        staticCtx.fillStyle = '#294344';
+      }
+      staticCtx.fillRect(0, 0, twBg, thBg);
+      staticCtx.restore();
+    }
+
+    // 5. Tilemaps Reais do Construct 2 (Estradas conectadas, Cruzamentos, Praias, Lagos, Florestas)
+    var tms = mapData.tilemaps || [];
+    for (var mi = 0; mi < tms.length; mi++) {
+      var tm = tms[mi];
+      var tmImgIdx = tm[0];
+      var tmImg = getLoadedImgByIdx(tmImgIdx);
+      if (!tmImg) continue;
+
+      var tmFn = mapData.images[tmImgIdx] || '';
+      var isGroundRoadSheet = tmFn.indexOf('ground_lvl') === 0;
+
+      var mx0 = tm[1];
+      var my0 = tm[2];
+      var mCols = tm[3];
+      var mRows = tm[4];
+      var mTw = tm[5] || 60;
+      var mTh = tm[6] || 60;
+      var rleStr = tm[7];
+      var mOx = tm[9] || 0;
+      var mOy = tm[10] || 0;
+      var mSpx = tm[11] || 0;
+      var mSpy = tm[12] || 0;
+
+      var tokens = rleStr.split(',');
+      var cellCursor = 0;
+      var totalCells = mCols * mRows;
+
+      for (var tk = 0; tk < tokens.length && cellCursor < totalCells; tk++) {
+        var tok = tokens[tk];
+        if (!tok) continue;
+
+        var xPos = tok.indexOf('x');
+        var rep = 1;
+        var rest = tok;
+        if (xPos > 0) {
+          rep = parseInt(tok.substring(0, xPos), 10) || 1;
+          rest = tok.substring(xPos + 1);
+        }
+
+        var tileId = parseInt(rest, 10);
+        if (isNaN(tileId) || tileId < 0) {
+          cellCursor += rep;
+          continue;
+        }
+
+        // Otimização: tile[6] sem flip em ground_lvl*_tilemap já foi preenchido pelo pattern base da ilha!
+        var flipH = rest.indexOf('h') >= 0;
+        var flipV = rest.indexOf('v') >= 0;
+        var flipD = rest.indexOf('d') >= 0;
+        if (isGroundRoadSheet && tileId === 6 && !flipH && !flipV && !flipD) {
+          cellCursor += rep;
+          continue;
+        }
+
+        var slice = getTileSliceSurface(tmImgIdx, tmImg, tileId, flipH, flipV, flipD, mTw, mTh, mOx, mOy, mSpx, mSpy);
+        var isRoadTile = isGroundRoadSheet && !!ROAD_TILE_INDICES[tileId];
+
+        for (var rStep = 0; rStep < rep && cellCursor < totalCells; rStep++, cellCursor++) {
+          if (!slice) continue;
+          var tyCell = Math.floor(cellCursor / mCols);
+          var txCell = cellCursor % mCols;
+          var wx = mx0 + txCell * mTw;
+          var wy = my0 + tyCell * mTh;
+          staticCtx.drawImage(slice, wx, wy, mTw + 0.75, mTh + 0.75);
+
+          // Realce sutil de contraste aéreo nas estradas para máxima visibilidade no celular
+          if (isRoadTile) {
+            staticCtx.fillStyle = 'rgba(232, 222, 198, 0.11)';
+            staticCtx.fillRect(wx, wy, mTw, mTh);
+          }
+        }
+      }
+    }
+
+    // 6. Muros, Cercas, Barreiras Militares HESCO e Carros Estáticos de Rua
+    var props = mapData.props || [];
+    for (var pi = 0; pi < props.length; pi++) {
+      var pr = props[pi];
+      if (!drawSpriteInstance(staticCtx, pr[0], pr[1], pr[2], pr[3], pr[4], pr[5])) {
+        staticCtx.save();
+        staticCtx.translate(pr[1], pr[2]);
+        if (pr[5]) staticCtx.rotate(pr[5]);
+        staticCtx.fillStyle = 'rgba(72, 68, 60, 0.85)';
+        var pw = Math.abs(pr[3]);
+        var ph = Math.abs(pr[4]);
+        staticCtx.fillRect(-pw * 0.5, -ph * 0.5, pw, ph);
+        staticCtx.restore();
+      }
+    }
+
+    // 7. Telhados Reais de Todas as Construções + Sombra Aérea + Contorno Tático Sutil
+    var roofFallbackColors = {
+      mil: '#4e5d42',
+      med: '#5c7c89',
+      pol: '#4c5c78',
+      fire: '#9e4735',
+      gas: '#9c6f38',
+      gun: '#68526e',
+      ch: '#9e8f68',
+      castle: '#8a8579',
+      shop: '#7d6b5d',
+      barn: '#7c533c',
+      gar: '#6b6e6d',
+      civ: '#835845',
+      deer: '#6d563b',
+      pump: '#3f7c99',
+      bridge: '#66635b'
+    };
+    var blds = mapData.buildings || [];
+    for (var bi = 0; bi < blds.length; bi++) {
+      var b = blds[bi];
+      var bx = b[0];
+      var by = b[1];
+      var bw = b[2];
+      var bh = b[3];
+      var bang = b[4] || 0;
+      var bkind = b[5] || 'civ';
+      var bsIdx = b[6];
+      var absBw = Math.abs(bw);
+      var absBh = Math.abs(bh);
+
+      // Sombra projetada no solo para dar relevo de satélite aos telhados
+      staticCtx.save();
+      staticCtx.translate(bx + 8, by + 10);
+      if (bang) staticCtx.rotate(bang);
+      staticCtx.fillStyle = 'rgba(0, 0, 0, 0.34)';
+      staticCtx.fillRect(-absBw * 0.5, -absBh * 0.5, absBw, absBh);
+      staticCtx.restore();
+
+      var drewRoof = drawSpriteInstance(staticCtx, bsIdx, bx, by, bw, bh, bang);
+      if (!drewRoof) {
+        staticCtx.save();
+        staticCtx.translate(bx, by);
+        if (bang) staticCtx.rotate(bang);
+        staticCtx.fillStyle = roofFallbackColors[bkind] || '#835845';
+        staticCtx.fillRect(-absBw * 0.5, -absBh * 0.5, absBw, absBh);
+        staticCtx.strokeStyle = 'rgba(18, 18, 16, 0.8)';
+        staticCtx.lineWidth = 5;
+        staticCtx.strokeRect(-absBw * 0.5, -absBh * 0.5, absBw, absBh);
+        staticCtx.restore();
+      }
+
+      // Contorno discreto apenas em edifícios especiais para leitura imediata sem poluir telhados
+      var lmk = LANDMARK_STYLE[bkind];
+      if (lmk && bkind !== 'pump') {
+        staticCtx.save();
+        staticCtx.translate(bx, by);
+        if (bang) staticCtx.rotate(bang);
+        staticCtx.strokeStyle = lmk.stroke;
+        staticCtx.lineWidth = 6;
+        staticCtx.strokeRect(-absBw * 0.5, -absBh * 0.5, absBw, absBh);
+        staticCtx.restore();
+      }
+    }
+
+    // 8. Copas de Árvores e Blocos de Floresta (alpha 0.90 preserva visibilidade de estradas adjacentes)
+    var trees = mapData.trees || [];
+    if (trees.length) {
+      staticCtx.save();
+      staticCtx.globalAlpha = 0.90;
+      for (var tri = 0; tri < trees.length; tri++) {
+        var tr = trees[tri];
+        if (!drawSpriteInstance(staticCtx, tr[0], tr[1], tr[2], tr[3], tr[4], 0)) {
+          staticCtx.fillStyle = isWinter ? 'rgba(92, 110, 104, 0.65)' : 'rgba(38, 56, 30, 0.65)';
+          staticCtx.beginPath();
+          staticCtx.arc(tr[1], tr[2], Math.max(18, Math.abs(tr[3]) * 0.38), 0, Math.PI * 2);
+          staticCtx.fill();
+        }
+      }
+      staticCtx.restore();
+    }
+
+    // 9. Grade Tática de Coordenadas (A1..P16 / A1..J10) gravada direto no OffscreenCanvas
+    var gSpec = getGridSpec();
+    staticCtx.strokeStyle = 'rgba(225, 240, 200, 0.20)';
+    staticCtx.lineWidth = Math.max(4, 1 / staticScale);
+
+    for (var gc = 0; gc <= gSpec.cols; gc++) {
+      var gx = gSpec.originX + gc * gSpec.cellW;
+      staticCtx.beginPath();
+      staticCtx.moveTo(gx, Math.max(0, gSpec.originY));
+      staticCtx.lineTo(gx, Math.min(mh, gSpec.originY + gSpec.rows * gSpec.cellH));
+      staticCtx.stroke();
+    }
+    for (var gr = 0; gr <= gSpec.rows; gr++) {
+      var gy = gSpec.originY + gr * gSpec.cellH;
+      staticCtx.beginPath();
+      staticCtx.moveTo(Math.max(0, gSpec.originX), gy);
+      staticCtx.lineTo(Math.min(mw, gSpec.originX + gSpec.cols * gSpec.cellW), gy);
+      staticCtx.stroke();
+    }
+
+    // Marca d'água sutil do código de cada quadrante (ex.: A1, F8, J10) no canto superior esquerdo do setor
+    staticCtx.font = 'bold 92px Consolas, monospace';
+    staticCtx.fillStyle = 'rgba(235, 245, 220, 0.16)';
+    staticCtx.textAlign = 'left';
+    staticCtx.textBaseline = 'top';
+    for (var sc = 0; sc < gSpec.cols; sc++) {
+      var colStr = colLetters(sc);
+      for (var sr = 0; sr < gSpec.rows; sr++) {
+        var sx0 = gSpec.originX + sc * gSpec.cellW + 34;
+        var sy0 = gSpec.originY + sr * gSpec.cellH + 28;
+        if (sx0 >= 0 && sy0 >= 0 && sx0 < mw - 80 && sy0 < mh - 60) {
+          staticCtx.fillText(colStr + (sr + 1), sx0, sy0);
+        }
+      }
+    }
+
+    staticCtx.restore();
+  }
+
+  // =========================================================================
+  // HUD, COORDENADAS E DESPOLUIÇÃO INTELIGENTE DE RÓTULOS (ZOOM / HOVER / TAP)
+  // =========================================================================
+  function updatePoiCard() {
+    var active = selectedPoi || hoveredPoi;
+    if (!active) {
+      poiCard.style.display = 'none';
+      return;
+    }
+    var sec = sectorLabel(active.x, active.y);
+    var distStr = '';
+    if (tickData && tickData.player) {
+      var dm = Math.round(Math.hypot(active.x - tickData.player.x, active.y - tickData.player.y) / PX_PER_METER);
+      distStr = ' • ' + dm + 'm de você';
+    }
+    poiCardTitle.textContent = (active.badge ? active.badge + ' ' : '') + active.label;
+    poiCardTitle.style.color = active.color || '#ffd54f';
+    poiCardSub.textContent = 'Setor ' + sec + distStr;
+    poiCard.style.borderColor = active.color || '#ffd54f';
+    poiCard.style.display = 'flex';
+  }
+
+  function updateHudText() {
+    connDot.classList.toggle('online', sseConnected && !!(mapData || tickData));
+    if (!mapData && !tickData) {
+      hudTitle.textContent = sseConnected ? 'ONLINE • AGUARDANDO PARTIDA' : 'RECONECTANDO...';
+      waitBanner.style.display = 'block';
+      return;
+    }
+
+    waitBanner.style.display = 'none';
+    var isl = mapData ? (mapData.island === 0 ? 'TUTORIAL' : ('ILHA ' + mapData.island)) : 'EM JOGO';
+    if (tickData && tickData.player) {
+      var p = tickData.player;
+      hudTitle.textContent = isl + (p.inBunker ? ' [BUNKER]' : '') + ' • DIA ' + p.day + ' ' + p.clock;
+      elHp.textContent = '❤ ' + p.hp + '%';
+      elWt.textContent = '💧 ' + p.water + '%';
+      elFd.textContent = '🥫 ' + p.food + '%';
+      elTm.textContent = '🌡 ' + (p.temp > 0 ? '+' + p.temp : p.temp);
+      elPos.textContent = 'SETOR ' + sectorLabel(p.x, p.y);
+      if (elQst) {
+        if (tickData.quest && tickData.quest.status >= 1 && tickData.quest.status <= 4) {
+          elQst.textContent = '📜 ' + (tickData.quest.taskTitle || 'Missão Ativa');
+          elQst.style.display = 'inline-block';
+        } else {
+          elQst.style.display = 'none';
+        }
+      }
+    } else {
+      hudTitle.textContent = isl + ' • SATÉLITE PRONTO';
+    }
+    btnClearWp.style.display = waypoint ? 'block' : 'none';
+    updatePoiCard();
+  }
+
+  function worldToScreen(wx, wy) {
+    var vw = window.innerWidth;
+    var vh = window.innerHeight;
+    return {
+      x: (wx - cam.x) * cam.zoom + vw * 0.5,
+      y: (wy - cam.y) * cam.zoom + vh * 0.5
+    };
+  }
+
+  function screenToWorld(sx, sy) {
+    var vw = window.innerWidth;
+    var vh = window.innerHeight;
+    return {
+      x: (sx - vw * 0.5) / cam.zoom + cam.x,
+      y: (sy - vh * 0.5) / cam.zoom + cam.y
+    };
+  }
+
+  function isSameTarget(a, b) {
+    if (!a || !b) return false;
+    return a.label === b.label && Math.abs(a.x - b.x) <= 8 && Math.abs(a.y - b.y) <= 8;
+  }
+
+  function drawStar(cx, cy, spikes, outerR, innerR) {
+    var rot = Math.PI / 2 * 3;
+    var step = Math.PI / spikes;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy - outerR);
+    for (var i = 0; i < spikes; i++) {
+      ctx.lineTo(cx + Math.cos(rot) * outerR, cy + Math.sin(rot) * outerR);
+      rot += step;
+      ctx.lineTo(cx + Math.cos(rot) * innerR, cy + Math.sin(rot) * innerR);
+      rot += step;
+    }
+    ctx.closePath();
+  }
+
+  // Renderiza caixa de texto somente se não colidir com outro rótulo já posicionado na tela
+  function tryDrawLabelBox(sx, sy, text, color, placedRects, forceShow) {
+    ctx.font = 'bold 10.5px Consolas, "Segoe UI", monospace';
+    var tw = Math.ceil(ctx.measureText(text).width) + 12;
+    var th = 16;
+    var rx = Math.round(sx - tw * 0.5);
+    var ry = Math.round(sy + 12);
+
+    if (!forceShow) {
+      for (var i = 0; i < placedRects.length; i++) {
+        var r = placedRects[i];
+        if (rx < r.x + r.w + 4 && rx + tw + 4 > r.x && ry < r.y + r.h + 3 && ry + th + 3 > r.y) {
+          return false;
+        }
+      }
+    }
+
+    placedRects.push({ x: rx, y: ry, w: tw, h: th });
+    ctx.fillStyle = 'rgba(10, 15, 12, 0.90)';
+    ctx.fillRect(rx, ry, tw, th);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1.2;
+    ctx.strokeRect(rx, ry, tw, th);
+    ctx.fillStyle = color;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(text, sx, ry + th * 0.5 + 0.5);
+    return true;
+  }
+
+  // Réguas fixas nas bordas da tela estilo DayZ/PUBG (A..P no topo, 1..16 na esquerda)
+  function drawStickyGridRulers(vw, vh) {
+    if (!mapData) return;
+    var g = getGridSpec();
+
+    // Régua vertical esquerda (1..16)
+    ctx.fillStyle = 'rgba(11, 16, 13, 0.82)';
+    ctx.fillRect(0, 0, 20, vh);
+    ctx.strokeStyle = 'rgba(148, 180, 104, 0.35)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(20.5, 0);
+    ctx.lineTo(20.5, vh);
+    ctx.stroke();
+
+    ctx.font = 'bold 10px Consolas, monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+
+    for (var r = 0; r < g.rows; r++) {
+      var wy0 = g.originY + r * g.cellH;
+      var wyMid = wy0 + g.cellH * 0.5;
+      var sy0 = worldToScreen(0, wy0).y;
+      var syMid = worldToScreen(0, wyMid).y;
+
+      if (sy0 >= 0 && sy0 <= vh) {
+        ctx.fillStyle = 'rgba(190, 215, 165, 0.35)';
+        ctx.fillRect(14, Math.round(sy0), 6, 1);
+      }
+      if (syMid >= 14 && syMid <= vh - 10) {
+        ctx.fillStyle = '#cfe0b8';
+        ctx.fillText(String(r + 1), 10, syMid);
+      }
+    }
+
+    // Marcadores horizontais de coluna (A..P) logo abaixo da barra ou no topo visível do mapa
+    var topMapY = Math.max(54, worldToScreen(0, Math.max(0, g.originY)).y + 10);
+    topMapY = Math.min(vh - 46, topMapY);
+    for (var c = 0; c < g.cols; c++) {
+      var wxMid = g.originX + (c + 0.5) * g.cellW;
+      var sxMid = worldToScreen(wxMid, 0).x;
+      if (sxMid >= 28 && sxMid <= vw - 14) {
+        ctx.fillStyle = 'rgba(11, 16, 13, 0.76)';
+        ctx.fillRect(sxMid - 10, topMapY - 8, 20, 15);
+        ctx.fillStyle = '#dce775';
+        ctx.fillText(colLetters(c), sxMid, topMapY);
+      }
+    }
+  }
+
+  function renderFrame() {
+    var vw = window.innerWidth;
+    var vh = window.innerHeight;
+
+    ctx.fillStyle = '#182b30';
+    ctx.fillRect(0, 0, vw, vh);
+
+    if (cam.follow && tickData && tickData.player) {
+      cam.x += (tickData.player.x - cam.x) * 0.22;
+      cam.y += (tickData.player.y - cam.y) * 0.22;
+    }
+
+    // 1. Blit único da Visão de Satélite em cache (0% overhead de CPU!)
+    if (mapData && staticLayer.width > 0) {
+      var tl = worldToScreen(0, 0);
+      var dw = mapData.width * cam.zoom;
+      var dh = mapData.height * cam.zoom;
+      ctx.imageSmoothingEnabled = cam.zoom < 0.45;
+      ctx.drawImage(staticLayer, tl.x, tl.y, dw, dh);
+    }
+
+    var pulse = 0.5 + 0.5 * Math.sin(Date.now() * 0.005);
+    var labelQueue = [];
+    interactiveTargets = [];
+
+    function registerInteractive(wx, wy, sx, sy, label, color, badge, prio) {
+      if (sx < -30 || sy < -30 || sx > vw + 30 || sy > vh + 30) return;
+      var item = { x: wx, y: wy, sx: sx, sy: sy, label: label, color: color, badge: badge, prio: prio };
+      interactiveTargets.push(item);
+
+      var isFocused = isSameTarget(item, selectedPoi) || isSameTarget(item, hoveredPoi);
+      if (isFocused) {
+        // Anel de inspeção no ícone selecionado/focado
+        ctx.beginPath();
+        ctx.arc(sx, sy, 13, 0, Math.PI * 2);
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+
+        var dTxt = '';
+        if (tickData && tickData.player) {
+          dTxt = ' • ' + Math.round(Math.hypot(wx - tickData.player.x, wy - tickData.player.y) / PX_PER_METER) + 'm';
+        }
+        labelQueue.push({
+          sx: sx,
+          sy: sy,
+          text: (badge ? badge + ' ' : '') + label + ' [' + sectorLabel(wx, wy) + ']' + dTxt,
+          color: color,
+          prio: 0,
+          force: true
+        });
+      } else if (cam.zoom >= LABEL_ZOOM_THRESHOLD) {
+        labelQueue.push({
+          sx: sx,
+          sy: sy,
+          text: (badge ? badge + ' ' : '') + label,
+          color: color,
+          prio: prio,
+          force: false
+        });
+      }
+    }
+
+    // 2. Pontos de Referência Geográficos (Igrejas, Hospitais, Bases Militares, Postos...)
+    if (filters.landmarks && landmarks.length) {
+      for (var li = 0; li < landmarks.length; li++) {
+        var lm = landmarks[li];
+        var ls = worldToScreen(lm.x, lm.y);
+        if (ls.x < -24 || ls.y < -24 || ls.x > vw + 24 || ls.y > vh + 24) continue;
+
+        if (cam.zoom >= LANDMARK_BADGE_ZOOM || lm.prio <= 3) {
+          var rad = cam.zoom >= 0.08 ? 8.5 : 6.8;
+          ctx.beginPath();
+          ctx.arc(ls.x, ls.y, rad, 0, Math.PI * 2);
+          ctx.fillStyle = 'rgba(12, 16, 14, 0.86)';
+          ctx.fill();
+          ctx.strokeStyle = lm.color;
+          ctx.lineWidth = 1.5;
+          ctx.stroke();
+
+          ctx.font = (rad > 7 ? '10px' : '8.5px') + ' "Segoe UI Emoji", "Segoe UI Symbol", sans-serif';
+          ctx.fillStyle = lm.color;
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(lm.icon, ls.x, ls.y + 0.5);
+
+          registerInteractive(lm.x, lm.y, ls.x, ls.y, lm.label, lm.color, lm.icon, lm.prio + 2);
+        }
+      }
+    }
+
+    // 3. Heli Crashes Reais, Veículos Dirigíveis e Tendas
+    if (filters.crashes) {
+      var crashes = (mapData && mapData.crashes) || [];
+      for (var ci = 0; ci < crashes.length; ci++) {
+        var cr = crashes[ci];
+        var cs = worldToScreen(cr.x, cr.y);
+        ctx.beginPath();
+        ctx.arc(cs.x, cs.y, 8 + pulse * 3, 0, Math.PI * 2);
+        ctx.strokeStyle = 'rgba(255, 112, 67, 0.6)';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+
+        ctx.fillStyle = '#ff7043';
+        ctx.strokeStyle = '#1f0b05';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(cs.x, cs.y - 7.5);
+        ctx.lineTo(cs.x + 7.5, cs.y + 6);
+        ctx.lineTo(cs.x - 7.5, cs.y + 6);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+
+        registerInteractive(cr.x, cr.y, cs.x, cs.y, cr.label, '#ffab91', '🚁', 2);
+      }
+
+      var tents = (tickData && tickData.tents) || [];
+      for (var ti = 0; ti < tents.length; ti++) {
+        var tn = tents[ti];
+        var ts = worldToScreen(tn.x, tn.y);
+        ctx.fillStyle = '#9ccc65';
+        ctx.strokeStyle = '#142209';
+        ctx.lineWidth = 1.4;
+        ctx.beginPath();
+        ctx.moveTo(ts.x, ts.y - 6.5);
+        ctx.lineTo(ts.x + 7, ts.y + 6);
+        ctx.lineTo(ts.x - 7, ts.y + 6);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+
+        registerInteractive(tn.x, tn.y, ts.x, ts.y, tn.label, '#c5e1a5', '⛺', 3);
+      }
+
+      var vehicles = (tickData && tickData.vehicles) || [];
+      for (var vi = 0; vi < vehicles.length; vi++) {
+        var vhObj = vehicles[vi];
+        var vs2 = worldToScreen(vhObj.x, vhObj.y);
+        ctx.fillStyle = '#29b6f6';
+        ctx.strokeStyle = '#071924';
+        ctx.lineWidth = 2;
+        ctx.fillRect(vs2.x - 6.5, vs2.y - 5, 13, 10);
+        ctx.strokeRect(vs2.x - 6.5, vs2.y - 5, 13, 10);
+
+        registerInteractive(vhObj.x, vhObj.y, vs2.x, vs2.y, vhObj.label, '#81d4fa', '🚙', 2);
+      }
+    }
+
+    // 4. Local Secreto Verdadeiro (1 por Ilha) & Bunkers / Extração (DESTAQUE DOURADO LIMPO)
+    if (filters.secrets && mapData) {
+      var goldList = (mapData.secrets || []).concat(mapData.bunkers || []);
+      for (var gi = 0; gi < goldList.length; gi++) {
+        var g = goldList[gi];
+        var gs = worldToScreen(g.x, g.y);
+
+        ctx.beginPath();
+        ctx.arc(gs.x, gs.y, 11 + pulse * 4.5, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(255, 213, 79, 0.22)';
+        ctx.fill();
+        ctx.strokeStyle = '#ffd54f';
+        ctx.lineWidth = 1.8;
+        ctx.stroke();
+
+        if (g.kind === 'secret') {
+          drawStar(gs.x, gs.y, 5, 8.8, 4.2);
+          ctx.fillStyle = '#ffd54f';
+          ctx.fill();
+          ctx.strokeStyle = '#2b2000';
+          ctx.lineWidth = 1.3;
+          ctx.stroke();
+          registerInteractive(g.x, g.y, gs.x, gs.y, g.label, '#ffd54f', '★', 1);
+        } else {
+          ctx.beginPath();
+          ctx.moveTo(gs.x, gs.y - 8);
+          ctx.lineTo(gs.x + 8, gs.y);
+          ctx.lineTo(gs.x, gs.y + 8);
+          ctx.lineTo(gs.x - 8, gs.y);
+          ctx.closePath();
+          ctx.fillStyle = '#ffd54f';
+          ctx.fill();
+          ctx.strokeStyle = '#2b2000';
+          ctx.lineWidth = 1.5;
+          ctx.stroke();
+          registerInteractive(g.x, g.y, gs.x, gs.y, g.label, '#ffe082', '◆', 1);
+        }
+      }
+    }
+
+    // 5. Radar de Ameaças Próximas
+    if (filters.threats && tickData && tickData.player) {
+      var ps0 = worldToScreen(tickData.player.x, tickData.player.y);
+      var radScreen = 2600 * cam.zoom;
+      ctx.beginPath();
+      ctx.arc(ps0.x, ps0.y, radScreen, 0, Math.PI * 2);
+      ctx.strokeStyle = 'rgba(174, 213, 129, 0.30)';
+      ctx.setLineDash([6, 6]);
+      ctx.lineWidth = 1.4;
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      var threats = tickData.threats || [];
+      for (var ei = 0; ei < threats.length; ei++) {
+        var th = threats[ei];
+        var es = worldToScreen(th.x, th.y);
+
+        if (th.kind === 'hulk') {
+          ctx.beginPath();
+          ctx.arc(es.x, es.y, 8 + pulse * 4, 0, Math.PI * 2);
+          ctx.fillStyle = 'rgba(255, 23, 68, 0.34)';
+          ctx.fill();
+          ctx.beginPath();
+          ctx.arc(es.x, es.y, 6, 0, Math.PI * 2);
+          ctx.fillStyle = '#ff1744';
+          ctx.fill();
+          registerInteractive(th.x, th.y, es.x, es.y, th.label, '#ff5252', '⚠', 2);
+        } else if (th.kind === 'bandit') {
+          ctx.beginPath();
+          ctx.moveTo(es.x, es.y - 6.5);
+          ctx.lineTo(es.x + 6.5, es.y);
+          ctx.lineTo(es.x, es.y + 6.5);
+          ctx.lineTo(es.x - 6.5, es.y);
+          ctx.closePath();
+          ctx.fillStyle = '#ff5252';
+          ctx.fill();
+          registerInteractive(th.x, th.y, es.x, es.y, th.label, '#ff8a80', '⚠', 3);
+        } else if (th.kind === 'ally') {
+          ctx.beginPath();
+          ctx.arc(es.x, es.y, 5.5, 0, Math.PI * 2);
+          ctx.fillStyle = '#69f0ae';
+          ctx.fill();
+          registerInteractive(th.x, th.y, es.x, es.y, th.label, '#69f0ae', '●', 3);
+        } else if (th.kind === 'special' || th.kind === 'wolf') {
+          ctx.beginPath();
+          ctx.arc(es.x, es.y, 4.6, 0, Math.PI * 2);
+          ctx.fillStyle = th.kind === 'wolf' ? '#ff9100' : '#e040fb';
+          ctx.fill();
+          registerInteractive(th.x, th.y, es.x, es.y, th.label, '#ea80fc', '', 4);
+        } else {
+          ctx.beginPath();
+          ctx.arc(es.x, es.y, 3.2, 0, Math.PI * 2);
+          ctx.fillStyle = 'rgba(255, 82, 82, 0.85)';
+          ctx.fill();
+        }
+      }
+    }
+
+    // 5.5. Missões & Sobreviventes Neutros (NPC Quest Giver & Itens Solicitados)
+    if (filters.quests && tickData && tickData.quest) {
+      var qst = tickData.quest;
+      var gList = qst.givers || (qst.giver ? [qst.giver] : []);
+
+      // A) Marcador dedicado para o NPC de Missão (Sobrevivente Neutro / Trader)
+      for (var qi = 0; qi < gList.length; qi++) {
+        var gv = gList[qi];
+        var gs = worldToScreen(gv.x, gv.y);
+
+        var isDone = qst.status === 4;
+        var isActive = qst.status === 2;
+        var isOffered = qst.status === 1;
+
+        var qRingCol = isDone ? 'rgba(118, 255, 3, 0.85)' : (isActive ? 'rgba(77, 208, 225, 0.85)' : 'rgba(77, 208, 225, 0.55)');
+        var qFillCol = isDone ? '#76ff03' : (isActive ? '#4dd0e1' : '#26c6da');
+        var qIcon = isDone ? '✔' : (isActive ? '!' : '?');
+
+        ctx.beginPath();
+        ctx.arc(gs.x, gs.y, 11 + pulse * 4, 0, Math.PI * 2);
+        ctx.strokeStyle = qRingCol;
+        ctx.lineWidth = 2.2;
+        ctx.stroke();
+
+        ctx.beginPath();
+        ctx.arc(gs.x, gs.y, 8, 0, Math.PI * 2);
+        ctx.fillStyle = qFillCol;
+        ctx.fill();
+        ctx.strokeStyle = '#051b20';
+        ctx.lineWidth = 1.6;
+        ctx.stroke();
+
+        ctx.font = 'bold 11px Consolas, monospace';
+        ctx.fillStyle = '#051b20';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(qIcon, gs.x, gs.y + 0.5);
+
+        var qLabel = gv.name || 'Sobrevivente Neutro';
+        if (isDone) {
+          qLabel = 'Sobrevivente (Entregar: ' + (qst.itemName || 'Missão') + '!)';
+        } else if (isActive) {
+          qLabel = 'Sobrevivente (' + (qst.taskTitle || 'Missão Ativa') + ')';
+        } else if (isOffered) {
+          qLabel = 'Sobrevivente (Missão Disponível)';
+        }
+
+        registerInteractive(gv.x, gv.y, gs.x, gs.y, qLabel, '#4dd0e1', '[' + qIcon + ']', 1);
+
+        if (cam.zoom >= LANDMARK_BADGE_ZOOM || isActive || isDone) {
+          labelQueue.push({
+            sx: gs.x,
+            sy: gs.y,
+            text: qLabel,
+            color: isDone ? '#76ff03' : '#4dd0e1',
+            prio: 1,
+            force: isActive || isDone
+          });
+        }
+      }
+
+      // B) Itens da Missão no chão (marcador pulsante roxo/dourado com linha pontilhada até ele)
+      var itList = qst.items || [];
+      for (var iti = 0; iti < itList.length; iti++) {
+        var it = itList[iti];
+        var its = worldToScreen(it.x, it.y);
+
+        // Halo pulsante roxo/dourado
+        ctx.beginPath();
+        ctx.arc(its.x, its.y, 12 + pulse * 4.5, 0, Math.PI * 2);
+        ctx.strokeStyle = 'rgba(255, 213, 79, 0.85)';
+        ctx.lineWidth = 2.2;
+        ctx.stroke();
+
+        // Losango roxo vibrante com borda dourada
+        ctx.save();
+        ctx.translate(its.x, its.y);
+        ctx.rotate(Math.PI / 4);
+        ctx.fillStyle = '#ab47bc';
+        ctx.fillRect(-7.5, -7.5, 15, 15);
+        ctx.strokeStyle = '#ffd54f';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(-7.5, -7.5, 15, 15);
+        ctx.restore();
+
+        // Linha pontilhada opcional do jogador até o item
+        if (tickData.player) {
+          var pScr = worldToScreen(tickData.player.x, tickData.player.y);
+          ctx.beginPath();
+          ctx.moveTo(pScr.x, pScr.y);
+          ctx.lineTo(its.x, its.y);
+          ctx.strokeStyle = 'rgba(255, 213, 79, 0.85)';
+          ctx.setLineDash([7, 5]);
+          ctx.lineWidth = 2.2;
+          ctx.stroke();
+          ctx.setLineDash([]);
+        }
+
+        var itLabel = '◆ ' + (it.name || qst.itemName || 'Item da Missão');
+        registerInteractive(it.x, it.y, its.x, its.y, 'Item da Missão: ' + (it.name || qst.itemName), '#ffd54f', '◆', 0);
+
+        labelQueue.push({
+          sx: its.x,
+          sy: its.y,
+          text: itLabel,
+          color: '#ffd54f',
+          prio: 0,
+          force: true
+        });
+      }
+    }
+
+    // 6. Waypoint Tático Sincronizado com o PC (sempre exibe distância em metros)
+    if (waypoint) {
+      var ws = worldToScreen(waypoint.x, waypoint.y);
+      var wpLabel = 'WP [' + sectorLabel(waypoint.x, waypoint.y) + ']';
+
+      if (tickData && tickData.player) {
+        var p0 = tickData.player;
+        var psLine = worldToScreen(p0.x, p0.y);
+        var dMeters = Math.round(Math.hypot(waypoint.x - p0.x, waypoint.y - p0.y) / PX_PER_METER);
+        wpLabel = 'WP • ' + dMeters + 'm';
+
+        ctx.beginPath();
+        ctx.moveTo(psLine.x, psLine.y);
+        ctx.lineTo(ws.x, ws.y);
+        ctx.strokeStyle = 'rgba(77, 208, 225, 0.82)';
+        ctx.setLineDash([7, 5]);
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+
+      ctx.beginPath();
+      ctx.arc(ws.x, ws.y, 9 + pulse * 4, 0, Math.PI * 2);
+      ctx.strokeStyle = '#4dd0e1';
+      ctx.lineWidth = 2.2;
+      ctx.stroke();
+
+      ctx.beginPath();
+      ctx.arc(ws.x, ws.y, 4, 0, Math.PI * 2);
+      ctx.fillStyle = '#ffd54f';
+      ctx.fill();
+
+      labelQueue.push({
+        sx: ws.x,
+        sy: ws.y,
+        text: wpLabel,
+        color: '#4dd0e1',
+        prio: 0,
+        force: true
+      });
+    }
+
+    // 7. Jogador em Tempo Real + Cone de Visão
+    if (tickData && tickData.player) {
+      var pl = tickData.player;
+      var ps = worldToScreen(pl.x, pl.y);
+      var ang = pl.angle || 0;
+
+      ctx.save();
+      ctx.translate(ps.x, ps.y);
+      ctx.rotate(ang);
+      ctx.beginPath();
+      ctx.moveTo(0, 0);
+      ctx.arc(0, 0, 30, -0.45, 0.45);
+      ctx.closePath();
+      ctx.fillStyle = 'rgba(118, 255, 3, 0.24)';
+      ctx.fill();
+
+      ctx.beginPath();
+      ctx.moveTo(10.5, 0);
+      ctx.lineTo(-7, 6.8);
+      ctx.lineTo(-4, 0);
+      ctx.lineTo(-7, -6.8);
+      ctx.closePath();
+      ctx.fillStyle = '#76ff03';
+      ctx.fill();
+      ctx.strokeStyle = '#091804';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    // 8. Desenha Rótulos Ordenados por Prioridade e Sem Sobreposição
+    if (labelQueue.length) {
+      labelQueue.sort(function (a, b) { return a.prio - b.prio; });
+      var placedRects = [];
+      for (var qi = 0; qi < labelQueue.length; qi++) {
+        var lq = labelQueue[qi];
+        tryDrawLabelBox(lq.sx, lq.sy, lq.text, lq.color, placedRects, lq.force);
+      }
+    }
+
+    // 9. Réguas laterais de coordenadas (A..P / 1..16)
+    drawStickyGridRulers(vw, vh);
+
+    window.requestAnimationFrame(renderFrame);
+  }
+
+  // =========================================================================
+  // INTERAÇÃO TÁTICA: HOVER, TOQUE EM ÍCONES, PINCH-TO-ZOOM E WAYPOINT
+  // =========================================================================
+  var pointers = {};
+  var lastPinchDist = 0;
+  var dragStart = null;
+  var movedDuringTouch = false;
+
+  function findNearestTarget(sx, sy, maxRadiusPx) {
+    var best = null;
+    var bestD2 = maxRadiusPx * maxRadiusPx;
+    for (var i = 0; i < interactiveTargets.length; i++) {
+      var t = interactiveTargets[i];
+      var dx = t.sx - sx;
+      var dy = t.sy - sy;
+      var d2 = dx * dx + dy * dy;
+      if (d2 <= bestD2) {
+        bestD2 = d2;
+        best = t;
+      }
+    }
+    return best;
+  }
+
+  function setFollow(state) {
+    cam.follow = state;
+    btnFollow.classList.toggle('active', state);
+  }
+
+  function sendWaypoint(wx, wy, clear) {
+    var body = clear ? { clear: true } : { x: Math.round(wx), y: Math.round(wy) };
+    fetch('/waypoint', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    }).catch(function () {});
+  }
+
+  function placeWaypointAt(wx, wy) {
+    if (!mapData) return;
+    if (wx < 0 || wy < 0 || wx > mapData.width || wy > mapData.height) return;
+    waypoint = { x: Math.round(wx), y: Math.round(wy) };
+    updateHudText();
+    sendWaypoint(waypoint.x, waypoint.y, false);
+  }
+
+  canvas.addEventListener('pointerdown', function (e) {
+    pointers[e.pointerId] = { x: e.clientX, y: e.clientY };
+    var ids = Object.keys(pointers);
+    if (ids.length === 1) {
+      dragStart = { x: e.clientX, y: e.clientY, camX: cam.x, camY: cam.y, time: Date.now() };
+      movedDuringTouch = false;
+    } else if (ids.length === 2) {
+      var p1 = pointers[ids[0]];
+      var p2 = pointers[ids[1]];
+      lastPinchDist = Math.hypot(p2.x - p1.x, p2.y - p1.y);
+      movedDuringTouch = true;
+    }
+  });
+
+  canvas.addEventListener('pointermove', function (e) {
+    // Hover de mouse em 2º monitor exibe o rótulo instantaneamente sem precisar dar zoom
+    if (e.pointerType === 'mouse' && Object.keys(pointers).length === 0) {
+      var hit = findNearestTarget(e.clientX, e.clientY, 22);
+      var changed = !isSameTarget(hit, hoveredPoi) && (hit !== hoveredPoi);
+      hoveredPoi = hit;
+      canvas.style.cursor = hit ? 'pointer' : 'grab';
+      if (changed) updatePoiCard();
+      return;
+    }
+
+    if (!pointers[e.pointerId]) return;
+    pointers[e.pointerId] = { x: e.clientX, y: e.clientY };
+    var ids = Object.keys(pointers);
+
+    if (ids.length === 1 && dragStart) {
+      var dx = e.clientX - dragStart.x;
+      var dy = e.clientY - dragStart.y;
+      if (Math.hypot(dx, dy) > 8) {
+        movedDuringTouch = true;
+        setFollow(false);
+        cam.x = dragStart.camX - dx / cam.zoom;
+        cam.y = dragStart.camY - dy / cam.zoom;
+      }
+    } else if (ids.length === 2) {
+      var p1 = pointers[ids[0]];
+      var p2 = pointers[ids[1]];
+      var dist = Math.hypot(p2.x - p1.x, p2.y - p1.y);
+      if (lastPinchDist > 10 && dist > 10) {
+        var midX = (p1.x + p2.x) * 0.5;
+        var midY = (p1.y + p2.y) * 0.5;
+        var before = screenToWorld(midX, midY);
+        cam.zoom = Math.max(0.012, Math.min(0.85, cam.zoom * (dist / lastPinchDist)));
+        var after = screenToWorld(midX, midY);
+        cam.x += (before.x - after.x);
+        cam.y += (before.y - after.y);
+      }
+      lastPinchDist = dist;
+    }
+  });
+
+  function onPointerRelease(e) {
+    var wasSingle = Object.keys(pointers).length === 1;
+    delete pointers[e.pointerId];
+    lastPinchDist = 0;
+
+    if (wasSingle && dragStart && !movedDuringTouch && (Date.now() - dragStart.time) < 420) {
+      var tappedIcon = findNearestTarget(e.clientX, e.clientY, 26);
+      if (tappedIcon) {
+        if (selectedPoi && isSameTarget(tappedIcon, selectedPoi) && filters.waypointTap) {
+          // Segundo toque no mesmo ícone marca Waypoint exatamente nele
+          placeWaypointAt(tappedIcon.x, tappedIcon.y);
+        } else {
+          selectedPoi = tappedIcon;
+          updatePoiCard();
+        }
+      } else {
+        selectedPoi = null;
+        updatePoiCard();
+        if (filters.waypointTap && mapData) {
+          var wpt = screenToWorld(e.clientX, e.clientY);
+          placeWaypointAt(wpt.x, wpt.y);
+        }
+      }
+    }
+    if (Object.keys(pointers).length === 0) dragStart = null;
+  }
+
+  canvas.addEventListener('pointerup', onPointerRelease);
+  canvas.addEventListener('pointercancel', onPointerRelease);
+
+  canvas.addEventListener('wheel', function (e) {
+    e.preventDefault();
+    var before = screenToWorld(e.clientX, e.clientY);
+    var factor = e.deltaY < 0 ? 1.18 : 0.85;
+    cam.zoom = Math.max(0.012, Math.min(0.85, cam.zoom * factor));
+    var after = screenToWorld(e.clientX, e.clientY);
+    cam.x += (before.x - after.x);
+    cam.y += (before.y - after.y);
+  }, { passive: false });
+
+  // Botões da UI
+  btnFollow.addEventListener('click', function () {
+    setFollow(!cam.follow);
+  });
+  document.getElementById('btn-fit').addEventListener('click', function () {
+    setFollow(false);
+    fitIsland();
+  });
+  document.getElementById('btn-zoom-in').addEventListener('click', function () {
+    cam.zoom = Math.min(0.85, cam.zoom * 1.35);
+  });
+  document.getElementById('btn-zoom-out').addEventListener('click', function () {
+    cam.zoom = Math.max(0.012, cam.zoom / 1.35);
+  });
+  btnClearWp.addEventListener('click', function () {
+    waypoint = null;
+    updateHudText();
+    sendWaypoint(0, 0, true);
+  });
+
+  document.getElementById('btn-poi-wp').addEventListener('click', function () {
+    var active = selectedPoi || hoveredPoi;
+    if (active) placeWaypointAt(active.x, active.y);
+  });
+  document.getElementById('btn-poi-close').addEventListener('click', function () {
+    selectedPoi = null;
+    hoveredPoi = null;
+    updatePoiCard();
+  });
+
+  document.getElementById('drawer-head').addEventListener('click', function () {
+    var col = drawer.classList.toggle('collapsed');
+    drawerToggleLbl.textContent = col ? '[Expandir ▲]' : '[Recolher ▼]';
+  });
+
+  document.getElementById('flt-secrets').addEventListener('change', function (e) { filters.secrets = e.target.checked; });
+  document.getElementById('flt-crashes').addEventListener('change', function (e) { filters.crashes = e.target.checked; });
+  document.getElementById('flt-landmarks').addEventListener('change', function (e) { filters.landmarks = e.target.checked; });
+  document.getElementById('flt-threats').addEventListener('change', function (e) { filters.threats = e.target.checked; });
+  document.getElementById('flt-quests').addEventListener('change', function (e) { filters.quests = e.target.checked; });
+  document.getElementById('flt-waypoint').addEventListener('change', function (e) { filters.waypointTap = e.target.checked; });
+
+  // =========================================================================
+  // STREAMING SSE LEVE + HIDRATAÇÃO INICIAL (/state + /events)
+  // =========================================================================
+  function applyMapInit(data) {
+    if (!data) return;
+    var firstLoad = !mapData || mapData.isFallback || mapData.island !== data.island || mapData.layout !== data.layout;
+    mapData = data;
+    tileSliceCache = {};
+    buildLandmarksIndex(data);
+    ensureMapTextures(data);
+    bakeStaticMap();
+
+    if (!cam.initialized || firstLoad) {
+      cam.initialized = true;
+      fitIsland();
+      if (tickData && tickData.player) {
+        cam.x = tickData.player.x;
+        cam.y = tickData.player.y;
+        cam.zoom = 0.095;
+      }
+    }
+    updateHudText();
+  }
+
+  function applyMapDelta(delta) {
+    if (!delta || !mapData || mapData.isFallback) return;
+    mapData.images = mapData.images || [];
+    mapData.sprites = mapData.sprites || [];
+    mapData.tilemaps = mapData.tilemaps || [];
+    mapData.buildings = mapData.buildings || [];
+
+    var imgRemap = {};
+    var dImgs = delta.images || [];
+    for (var i = 0; i < dImgs.length; i++) {
+      var fn = dImgs[i];
+      var idx = mapData.images.indexOf(fn);
+      if (idx < 0) {
+        idx = mapData.images.length;
+        mapData.images.push(fn);
+      }
+      imgRemap[i] = idx;
+    }
+
+    var sprRemap = {};
+    var dSprs = delta.sprites || [];
+    for (var s = 0; s < dSprs.length; s++) {
+      var sp = dSprs[s];
+      var mappedImg = imgRemap[sp[0]] !== undefined ? imgRemap[sp[0]] : sp[0];
+      var newIdx = mapData.sprites.length;
+      mapData.sprites.push([mappedImg, sp[1], sp[2], sp[3], sp[4], sp[5], sp[6]]);
+      sprRemap[s] = newIdx;
+    }
+
+    var dTms = delta.tilemaps || [];
+    for (var t = 0; t < dTms.length; t++) {
+      var tm = dTms[t].slice();
+      tm[0] = imgRemap[tm[0]] !== undefined ? imgRemap[tm[0]] : tm[0];
+      mapData.tilemaps.push(tm);
+    }
+
+    var dBlds = delta.buildings || [];
+    for (var b = 0; b < dBlds.length; b++) {
+      var nb = dBlds[b].slice();
+      if (nb[6] >= 0 && sprRemap[nb[6]] !== undefined) nb[6] = sprRemap[nb[6]];
+      var replaced = false;
+      for (var eb = 0; eb < mapData.buildings.length; eb++) {
+        var oldB = mapData.buildings[eb];
+        if (Math.abs(oldB[0] - nb[0]) <= 36 && Math.abs(oldB[1] - nb[1]) <= 36) {
+          mapData.buildings[eb] = nb;
+          replaced = true;
+          break;
+        }
+      }
+      if (!replaced) mapData.buildings.push(nb);
+    }
+
+    ensureMapTextures(mapData);
+    scheduleRebake();
+  }
+
+  function applyTick(data) {
+    if (!data) return;
+    var hadTick = !!tickData;
+    tickData = data;
+
+    if (!mapData && data.mapWidth && data.mapHeight) {
+      mapData = {
+        isFallback: true,
+        layout: data.layout || 'Map',
+        width: data.mapWidth,
+        height: data.mapHeight,
+        island: typeof data.island === 'number' ? data.island : 1,
+        buildings: [],
+        secrets: [],
+        crashes: [],
+        bunkers: []
+      };
+      bakeStaticMap();
+      fitIsland();
+      fetchStateSnapshot();
+    }
+
+    if (!hadTick && data.player && cam.follow) {
+      cam.x = data.player.x;
+      cam.y = data.player.y;
+      if (cam.zoom < 0.06) cam.zoom = 0.095;
+    }
+    updateHudText();
+  }
+
+  function applyWaypoint(wp) {
+    waypoint = (wp && !wp.clear && typeof wp.x === 'number' && typeof wp.y === 'number') ? wp : null;
+    updateHudText();
+  }
+
+  function fetchStateSnapshot() {
+    fetch('/state').then(function (r) { return r.json(); }).then(function (st) {
+      sseConnected = true;
+      if (st.map) applyMapInit(st.map);
+      if (st.deltas && st.deltas.length) {
+        for (var d = 0; d < st.deltas.length; d++) applyMapDelta(st.deltas[d]);
+      }
+      if (st.tick) applyTick(st.tick);
+      applyWaypoint(st.waypoint);
+      updateHudText();
+    }).catch(function () {});
+  }
+
+  fetchStateSnapshot();
+  window.setInterval(function () {
+    if (!sseConnected || !mapData || mapData.isFallback) {
+      fetchStateSnapshot();
+    }
+  }, 2500);
+
+  function connectSse() {
+    var es = new EventSource('/events');
+    es.onopen = function () {
+      sseConnected = true;
+      updateHudText();
+    };
+    es.addEventListener('map_init', function (e) {
+      try { applyMapInit(JSON.parse(e.data)); } catch (err) {}
+    });
+    es.addEventListener('map_delta', function (e) {
+      try { applyMapDelta(JSON.parse(e.data)); } catch (err) {}
+    });
+    es.addEventListener('tick', function (e) {
+      try { applyTick(JSON.parse(e.data)); } catch (err) {}
+    });
+    es.addEventListener('waypoint', function (e) {
+      try { applyWaypoint(JSON.parse(e.data)); } catch (err) {}
+    });
+    es.onerror = function () {
+      sseConnected = false;
+      updateHudText();
+    };
+  }
+
+  connectSse();
+  window.requestAnimationFrame(renderFrame);
+})();
+</script>
+</body>
+</html>

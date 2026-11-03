@@ -285,8 +285,254 @@
         syncPinTimer();
     }
 
+    // =========================================================================
+    // 4.1 GERADOR DE QR CODE PURO (ISO/IEC 18004 BYTE MODE V1-V4 ECC LEVEL L)
+    //     Zero dependências externas — renderiza direto em Canvas/SVG nativo.
+    // =========================================================================
+    function createQrMatrix(text) {
+        const VERSIONS = [
+            null,
+            { size: 21, dataCw: 19, ecCw: 7, align: [] },
+            { size: 25, dataCw: 34, ecCw: 10, align: [6, 18] },
+            { size: 29, dataCw: 55, ecCw: 15, align: [6, 22] },
+            { size: 33, dataCw: 80, ecCw: 20, align: [6, 26] }
+        ];
+
+        const bytes = new TextEncoder().encode(String(text || ''));
+        let ver = 2;
+        for (let v = 1; v <= 4; v++) {
+            if (bytes.length + 2 <= VERSIONS[v].dataCw) {
+                ver = v;
+                break;
+            }
+        }
+        const cfg = VERSIONS[ver];
+        const bits = [];
+        function pushBits(val, len) {
+            for (let i = len - 1; i >= 0; i--) bits.push((val >>> i) & 1);
+        }
+
+        pushBits(0x4, 4); // Byte mode (0100)
+        pushBits(bytes.length, 8);
+        for (let i = 0; i < bytes.length; i++) pushBits(bytes[i], 8);
+
+        const maxBits = cfg.dataCw * 8;
+        const term = Math.min(4, maxBits - bits.length);
+        for (let i = 0; i < term; i++) bits.push(0);
+        while (bits.length % 8 !== 0) bits.push(0);
+
+        const data = [];
+        for (let i = 0; i < bits.length; i += 8) {
+            let b = 0;
+            for (let j = 0; j < 8; j++) b = (b << 1) | bits[i + j];
+            data.push(b);
+        }
+        let padToggle = 0;
+        while (data.length < cfg.dataCw) {
+            data.push(padToggle === 0 ? 0xEC : 0x11);
+            padToggle ^= 1;
+        }
+
+        // Tabelas GF(256) (polinômio primitivo 0x11D)
+        const exp = new Uint8Array(512);
+        const log = new Uint8Array(256);
+        let x = 1;
+        for (let i = 0; i < 255; i++) {
+            exp[i] = x;
+            log[x] = i;
+            x = (x << 1) ^ ((x & 0x80) ? 0x11D : 0);
+        }
+        for (let i = 255; i < 512; i++) exp[i] = exp[i - 255];
+        const gfMul = function (a, b) {
+            return (a === 0 || b === 0) ? 0 : exp[log[a] + log[b]];
+        };
+
+        // Polinômio gerador Reed-Solomon de grau ecCw
+        let gen = [1];
+        for (let i = 0; i < cfg.ecCw; i++) {
+            const next = new Array(gen.length + 1).fill(0);
+            for (let j = 0; j < gen.length; j++) {
+                next[j] ^= gen[j];
+                next[j + 1] ^= gfMul(gen[j], exp[i]);
+            }
+            gen = next;
+        }
+
+        const rem = new Uint8Array(cfg.ecCw);
+        for (let i = 0; i < data.length; i++) {
+            const factor = data[i] ^ rem[0];
+            for (let j = 0; j < cfg.ecCw - 1; j++) rem[j] = rem[j + 1];
+            rem[cfg.ecCw - 1] = 0;
+            for (let j = 0; j < cfg.ecCw; j++) {
+                rem[j] ^= gfMul(gen[j + 1], factor);
+            }
+        }
+
+        const codewords = data.concat(Array.from(rem));
+        const size = cfg.size;
+        const modules = Array.from({ length: size }, function () { return new Uint8Array(size); });
+        const isFunc = Array.from({ length: size }, function () { return new Uint8Array(size); });
+
+        function setFunc(r, c, dark) {
+            if (r < 0 || c < 0 || r >= size || c >= size) return;
+            modules[r][c] = dark ? 1 : 0;
+            isFunc[r][c] = 1;
+        }
+
+        function drawFinder(topR, leftC) {
+            for (let dr = -1; dr <= 7; dr++) {
+                for (let dc = -1; dc <= 7; dc++) {
+                    const dist = Math.max(Math.abs(dr - 3), Math.abs(dc - 3));
+                    const dark = (dr >= 0 && dr <= 6 && dc >= 0 && dc <= 6) && (dist !== 2);
+                    setFunc(topR + dr, leftC + dc, dark);
+                }
+            }
+        }
+
+        drawFinder(0, 0);
+        drawFinder(0, size - 7);
+        drawFinder(size - 7, 0);
+
+        // Alignment patterns
+        for (let i = 0; i < cfg.align.length; i++) {
+            for (let j = 0; j < cfg.align.length; j++) {
+                const ar = cfg.align[i];
+                const ac = cfg.align[j];
+                if ((ar < 9 && ac < 9) || (ar < 9 && ac >= size - 8) || (ar >= size - 8 && ac < 9)) continue;
+                for (let dr = -2; dr <= 2; dr++) {
+                    for (let dc = -2; dc <= 2; dc++) {
+                        setFunc(ar + dr, ac + dc, Math.max(Math.abs(dr), Math.abs(dc)) !== 1);
+                    }
+                }
+            }
+        }
+
+        // Timing patterns
+        for (let i = 8; i < size - 8; i++) {
+            if (!isFunc[6][i]) setFunc(6, i, (i % 2) === 0);
+            if (!isFunc[i][6]) setFunc(i, 6, (i % 2) === 0);
+        }
+
+        // Reserva área de Format Info + Dark Module
+        for (let i = 0; i <= 8; i++) {
+            if (i !== 6) {
+                isFunc[8][i] = 1;
+                isFunc[i][8] = 1;
+            }
+        }
+        for (let i = 0; i < 8; i++) {
+            isFunc[8][size - 1 - i] = 1;
+            if (i < 7) isFunc[size - 1 - i][8] = 1;
+        }
+        setFunc(size - 8, 8, true);
+
+        // Zigzag de bits de dados + ECC
+        let bitIdx = 0;
+        const totalDataBits = codewords.length * 8;
+        let upward = true;
+        for (let right = size - 1; right >= 1; right -= 2) {
+            if (right === 6) right = 5;
+            for (let vert = 0; vert < size; vert++) {
+                const r = upward ? (size - 1 - vert) : vert;
+                for (let j = 0; j < 2; j++) {
+                    const c = right - j;
+                    if (!isFunc[r][c]) {
+                        let dark = 0;
+                        if (bitIdx < totalDataBits) {
+                            dark = (codewords[bitIdx >>> 3] >>> (7 - (bitIdx & 7))) & 1;
+                            bitIdx++;
+                        }
+                        modules[r][c] = dark;
+                    }
+                }
+            }
+            upward = !upward;
+        }
+
+        function writeFormatBits(mat, mask) {
+            const data5 = (0x01 << 3) | mask; // ECC Level L = 01
+            let remBch = data5 << 10;
+            for (let i = 14; i >= 10; i--) {
+                if ((remBch >>> i) & 1) remBch ^= (0x537 << (i - 10));
+            }
+            const fmt = ((data5 << 10) | remBch) ^ 0x5412;
+
+            for (let i = 0; i <= 5; i++) mat[i][8] = (fmt >>> i) & 1;
+            mat[7][8] = (fmt >>> 6) & 1;
+            mat[8][8] = (fmt >>> 7) & 1;
+            mat[8][7] = (fmt >>> 8) & 1;
+            for (let i = 9; i < 15; i++) mat[8][14 - i] = (fmt >>> i) & 1;
+
+            for (let i = 0; i < 8; i++) mat[8][size - 1 - i] = (fmt >>> i) & 1;
+            for (let i = 8; i < 15; i++) mat[size - 15 + i][8] = (fmt >>> i) & 1;
+            mat[size - 8][8] = 1;
+        }
+
+        const maskFns = [
+            function (r, c) { return ((r + c) % 2) === 0; },
+            function (r) { return (r % 2) === 0; },
+            function (_, c) { return (c % 3) === 0; },
+            function (r, c) { return ((r + c) % 3) === 0; },
+            function (r, c) { return ((Math.floor(r / 2) + Math.floor(c / 3)) % 2) === 0; },
+            function (r, c) { return ((r * c) % 2 + (r * c) % 3) === 0; },
+            function (r, c) { return ((((r * c) % 2) + ((r * c) % 3)) % 2) === 0; },
+            function (r, c) { return ((((r + c) % 2) + ((r * c) % 3)) % 2) === 0; }
+        ];
+
+        let bestMat = null;
+        let bestPenalty = Infinity;
+        for (let m = 0; m < 8; m++) {
+            const cand = modules.map(function (row) { return Uint8Array.from(row); });
+            for (let r = 0; r < size; r++) {
+                for (let c = 0; c < size; c++) {
+                    if (!isFunc[r][c] && maskFns[m](r, c)) cand[r][c] ^= 1;
+                }
+            }
+            writeFormatBits(cand, m);
+
+            let pen = 0;
+            for (let r = 0; r < size; r++) {
+                let runH = 1, runV = 1;
+                for (let c = 1; c < size; c++) {
+                    if (cand[r][c] === cand[r][c - 1]) { runH++; if (runH === 5) pen += 3; else if (runH > 5) pen++; } else runH = 1;
+                    if (cand[c][r] === cand[c - 1][r]) { runV++; if (runV === 5) pen += 3; else if (runV > 5) pen++; } else runV = 1;
+                }
+            }
+            if (pen < bestPenalty) {
+                bestPenalty = pen;
+                bestMat = cand;
+            }
+        }
+
+        return bestMat;
+    }
+
+    function renderQrCanvas(canvasEl, text) {
+        if (!canvasEl || !text) return;
+        const mat = createQrMatrix(text);
+        const quiet = 3;
+        const total = mat.length + quiet * 2;
+        const scale = 4;
+        canvasEl.width = total * scale;
+        canvasEl.height = total * scale;
+        const ctx = canvasEl.getContext('2d');
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, canvasEl.width, canvasEl.height);
+        ctx.fillStyle = '#0c110c';
+        for (let r = 0; r < mat.length; r++) {
+            for (let c = 0; c < mat.length; c++) {
+                if (mat[r][c]) {
+                    ctx.fillRect((c + quiet) * scale, (r + quiet) * scale, scale, scale);
+                }
+            }
+        }
+    }
+
     function buildControlsTabUI() {
         if (document.getElementById('mdz-controls-root')) return;
+
+        const comp = window.__MDZ_COMPANION__ || { url: 'http://127.0.0.1:8080', isLocalhostFallback: true };
+        const companionUrl = comp.url || 'http://127.0.0.1:8080';
 
         const style = document.createElement('style');
         style.id = 'mdz-controls-style';
@@ -294,7 +540,7 @@
             '#mdz-controls-root { position: fixed; inset: 0; pointer-events: none; z-index: 99999; font-family: Consolas, "Segoe UI", monospace; }',
             '#mdz-controls-tab { position: fixed; top: 4px; left: 150px; pointer-events: auto; cursor: pointer; background: rgba(18, 22, 18, 0.78); color: #d8e2c8; border: 1px solid rgba(168, 196, 122, 0.55); border-radius: 4px; padding: 3px 9px; font-size: 11px; font-weight: 700; letter-spacing: 0.4px; opacity: 0.65; transition: opacity 0.15s ease, background 0.15s ease; }',
             '#mdz-controls-tab:hover, #mdz-controls-tab.is-active { opacity: 1; background: rgba(32, 42, 28, 0.96); border-color: #a8c47a; }',
-            '#mdz-controls-panel { position: fixed; top: 30px; left: 150px; width: 310px; pointer-events: auto; display: none; background: rgba(14, 17, 14, 0.95); color: #e6ecd8; border: 1px solid #8ca864; border-radius: 6px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.75); padding: 10px 12px; font-size: 12px; }',
+            '#mdz-controls-panel { position: fixed; top: 30px; left: 150px; width: 326px; max-height: calc(100vh - 40px); overflow-y: auto; pointer-events: auto; display: none; background: rgba(14, 17, 14, 0.96); color: #e6ecd8; border: 1px solid #8ca864; border-radius: 6px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.78); padding: 10px 12px; font-size: 12px; }',
             '.mdz-cp-head { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid rgba(140, 168, 100, 0.35); padding-bottom: 6px; margin-bottom: 8px; font-weight: 700; color: #b8d888; font-size: 12px; }',
             '.mdz-cp-close { cursor: pointer; background: none; border: none; color: #b8d888; font-size: 14px; font-weight: 700; padding: 0 4px; }',
             '.mdz-cp-row { display: flex; justify-content: space-between; align-items: center; padding: 4px 0; border-bottom: 1px dashed rgba(255, 255, 255, 0.08); }',
@@ -302,6 +548,14 @@
             '.mdz-cp-desc { color: #d8dfd0; font-size: 11.5px; text-align: right; }',
             '.mdz-cp-foot { margin-top: 8px; padding-top: 6px; display: flex; align-items: center; justify-content: space-between; font-size: 11px; color: #b4c2a4; }',
             '.mdz-cp-foot label { display: flex; align-items: center; gap: 6px; cursor: pointer; }',
+            '.mdz-companion-box { margin-top: 10px; padding-top: 8px; border-top: 1px solid rgba(140, 168, 100, 0.35); }',
+            '.mdz-comp-title { font-weight: 700; color: #ffd54f; font-size: 11.5px; margin-bottom: 6px; display: flex; justify-content: space-between; align-items: center; }',
+            '.mdz-comp-body { display: flex; align-items: center; gap: 10px; }',
+            '#mdz-qr-canvas { width: 104px; height: 104px; border-radius: 4px; image-rendering: pixelated; flex-shrink: 0; border: 1px solid rgba(255, 213, 79, 0.55); background: #fff; }',
+            '.mdz-comp-info { display: flex; flex-direction: column; gap: 5px; min-width: 0; flex: 1; }',
+            '.mdz-comp-url { background: #1d261a; color: #80deea; border: 1px solid rgba(128, 222, 234, 0.45); border-radius: 4px; padding: 4px 6px; font-size: 11px; font-weight: 700; word-break: break-all; user-select: text; }',
+            '.mdz-comp-hint { font-size: 10.5px; color: #a9b89b; line-height: 1.35; }',
+            '.mdz-comp-copy { align-self: flex-start; cursor: pointer; background: #263121; color: #d4f0a0; border: 1px solid #6b8848; border-radius: 3px; padding: 2px 8px; font-size: 10.5px; font-weight: 700; font-family: inherit; }',
             '#mdz-controls-pins { position: fixed; inset: 0; pointer-events: none; display: none; }',
             '.mdz-hud-pin { position: fixed; transform: translate(-50%, -50%); pointer-events: none; display: flex; flex-direction: column; align-items: center; gap: 2px; }',
             '.mdz-pin-key { background: rgba(16, 22, 14, 0.86); color: #ffe082; border: 1px solid rgba(255, 213, 79, 0.85); border-radius: 3px; padding: 1px 5px; font-size: 10px; font-weight: 700; text-shadow: 0 1px 2px #000; }',
@@ -330,6 +584,20 @@
             '  <div class="mdz-cp-foot">',
             '    <label><input type="checkbox" id="mdz-keep-pins" /> Fixar indicadores de tecla no HUD</label>',
             '  </div>',
+            '  <div class="mdz-companion-box">',
+            '    <div class="mdz-comp-title">',
+            '      <span>📡 RADAR TÁTICO MOBILE (LAN)</span>',
+            '      <span style="font-size:10px;color:#9ccc65;">1Hz SSE</span>',
+            '    </div>',
+            '    <div class="mdz-comp-body">',
+            '      <canvas id="mdz-qr-canvas" title="Escaneie com a câmera do celular"></canvas>',
+            '      <div class="mdz-comp-info">',
+            '        <div class="mdz-comp-url" id="mdz-comp-url">' + companionUrl + '</div>',
+            '        <div class="mdz-comp-hint">Escaneie o QR Code no celular (mesmo Wi-Fi) ou abra no 2º monitor.</div>',
+            '        <button type="button" class="mdz-comp-copy" id="mdz-comp-copy">Copiar Link</button>',
+            '      </div>',
+            '    </div>',
+            '  </div>',
             '</div>'
         ].join('');
 
@@ -339,6 +607,10 @@
         panelEl = document.getElementById('mdz-controls-panel');
         pinsLayerEl = document.getElementById('mdz-controls-pins');
         keepPinsCheckEl = document.getElementById('mdz-keep-pins');
+        const qrCanvasEl = document.getElementById('mdz-qr-canvas');
+        const copyBtnEl = document.getElementById('mdz-comp-copy');
+
+        renderQrCanvas(qrCanvasEl, companionUrl);
 
         stopCanvasLeak(tabBtnEl);
         stopCanvasLeak(panelEl);
@@ -355,6 +627,17 @@
             keepPinsVisible = !!keepPinsCheckEl.checked;
             syncPinTimer();
         });
+
+        if (copyBtnEl) {
+            copyBtnEl.addEventListener('click', function () {
+                if (navigator.clipboard && navigator.clipboard.writeText) {
+                    navigator.clipboard.writeText(companionUrl).then(function () {
+                        copyBtnEl.textContent = 'Copiado!';
+                        window.setTimeout(function () { copyBtnEl.textContent = 'Copiar Link'; }, 1500);
+                    }).catch(function () {});
+                }
+            });
+        }
 
         window.addEventListener('resize', function () {
             if (panelOpen || keepPinsVisible) renderControlPins();

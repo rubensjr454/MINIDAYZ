@@ -139,9 +139,9 @@
 	  })();
 	</script>
 
-	<!-- MiniDayZ PC Port: remove a "cara de navegador" -->
+	<!-- MiniDayZ PC Port: remove a "cara de navegador" e garante que html/body acompanhem 100% da janela -->
 	<style>
-	  body, html { overflow: hidden; user-select: none; -webkit-user-drag: none; touch-action: none; }
+	  html, body { width: 100%; height: 100%; overflow: hidden; user-select: none; -webkit-user-drag: none; touch-action: none; }
 	  img { pointer-events: none; }
 	</style>
 
@@ -234,7 +234,61 @@
 			}
 		};
     </script>
+    <!-- Sincronização dinâmica de resolução e âncoras do HUD via ResizeObserver -->
+    <script id="hud-resize-sync">
+    (function () {
+        var lastW = 0;
+        var lastH = 0;
+        var isSyncing = false;
+
+        function syncHudAndViewport() {
+            if (isSyncing) return;
+
+            var w = Math.round(window.innerWidth || document.documentElement.clientWidth || 0);
+            var h = Math.round(window.innerHeight || document.documentElement.clientHeight || 0);
+            if (w <= 0 || h <= 0 || (w === lastW && h === lastH)) return;
+
+            var rt = typeof window.cr_getC2Runtime === 'function' ? window.cr_getC2Runtime() : null;
+            if (rt) {
+                lastW = w;
+                lastH = h;
+            }
+
+            isSyncing = true;
+            try {
+                if (typeof window.cr_sizeCanvas === 'function') {
+                    window.cr_sizeCanvas(w, h);
+                }
+                window.dispatchEvent(new Event('resize'));
+            } finally {
+                isSyncing = false;
+            }
+        }
+
+        function attachResizeObserver() {
+            var target = document.body || document.documentElement;
+            if (target && typeof ResizeObserver !== 'undefined') {
+                var observer = new ResizeObserver(function () {
+                    syncHudAndViewport();
+                });
+                observer.observe(target);
+            }
+
+            window.addEventListener('resize', syncHudAndViewport);
+            window.addEventListener('load', syncHudAndViewport);
+            syncHudAndViewport();
+        }
+
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', attachResizeObserver);
+        } else {
+            attachResizeObserver();
+        }
+    })();
+    </script>
     <!-- Módulo Isolado de Controles PC (Teclado + Aba Visual de Controles [F1]) -->
     <script id="pc-keybinds" src="controls/pc-controls.js"></script>
+    <!-- Módulo Isolado de Telemetria 1Hz & Waypoint HUD (Radar Tático Companion LAN) -->
+    <script id="companion-telemetry" src="companion/radar-telemetry.js"></script>
 </body> 
 </html> 

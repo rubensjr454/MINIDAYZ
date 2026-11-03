@@ -4,6 +4,7 @@ using System.IO;
 using System.Text.Json;
 using System.Windows;
 using Microsoft.Web.WebView2.Core;
+using MiniDayZ.App.Companion;
 using MiniDayZ.App.Controls;
 
 namespace MiniDayZ.App;
@@ -11,7 +12,10 @@ namespace MiniDayZ.App;
 public partial class MainWindow : Window
 {
     private bool _isSafeToClose = false;
+    private bool _loggedFirstMapInit = false;
+    private bool _loggedFirstTick = false;
     private readonly PcControlsManager _controls;
+    private readonly CompanionServer _companion = new();
 
     /// <summary>
     /// Flags do Chromium: remove telemetria/tarefas de fundo e empurra rasterização para a GPU.
@@ -30,7 +34,9 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
         _controls = new PcControlsManager(WebView);
+        _companion.WaypointReceived += OnCompanionWaypointReceived;
         this.Closing += MainWindow_Closing;
+        this.Closed += (_, _) => _companion.Dispose();
         this.Activated += (_, _) => WebView.Focus();
         this.PreviewKeyDown += (_, e) => _controls.TryHandlePreviewKeyDown(e);
         Loaded += async (_, _) => await InitializeAsync();
@@ -65,6 +71,9 @@ public partial class MainWindow : Window
     {
         try
         {
+            // Inicia o servidor LAN ultraleve imediatamente em background sem bloquear a UI Thread.
+            _companion.Start();
+
             var options = new CoreWebView2EnvironmentOptions
             {
                 AdditionalBrowserArguments = BrowserArguments
@@ -89,9 +98,18 @@ public partial class MainWindow : Window
             core.WebMessageReceived += OnWebMessageReceived;
             core.NavigationCompleted += (_, _) => WebView.Focus();
 
-            // Hidrata os saves do disco ANTES de qualquer script da página (getItem é síncrono no JS).
+            // Hidrata os saves do disco e metadados do Companion ANTES de qualquer script da página.
             string savesJson = JsonSerializer.Serialize(SaveSystem.LoadAll());
-            await core.AddScriptToExecuteOnDocumentCreatedAsync($"window.__MDZ_SAVES__ = {savesJson};");
+            string companionJson = JsonSerializer.Serialize(new
+            {
+                url = _companion.Url,
+                ip = _companion.HostIp,
+                port = _companion.Port,
+                isRunning = _companion.IsRunning,
+                isLocalhostFallback = _companion.IsLocalhostFallback
+            });
+            await core.AddScriptToExecuteOnDocumentCreatedAsync(
+                $"window.__MDZ_SAVES__ = {savesJson}; window.__MDZ_COMPANION__ = {companionJson};");
 
 #if DEBUG
             await AttachConsoleLoggingAsync(core);
@@ -176,9 +194,12 @@ public partial class MainWindow : Window
 
             Debug.WriteLine($"[MiniDayZ IPC] Mensagem ignorada: {json}");
         }
-        catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException or ArgumentException)
+        catch (Exception ex)
         {
-            Debug.WriteLine($"[MiniDayZ IPC] Erro: {ex.Message}");
+            Debug.WriteLine($"[MiniDayZ IPC] Erro: {ex}");
+#if DEBUG
+            Console.WriteLine($"[MiniDayZ IPC] Erro: {ex.Message}");
+#endif
         }
     }
 
@@ -194,6 +215,55 @@ public partial class MainWindow : Window
 
         if (_controls.TryHandleWebMessage(root, action))
         {
+            return;
+        }
+
+        if (action == "companion_map_init")
+        {
+            if (root.TryGetProperty("payload", out JsonElement mapEl))
+            {
+                string rawMap = mapEl.GetRawText();
+                _companion.UpdateMapInit(rawMap);
+
+                if (!_loggedFirstMapInit)
+                {
+                    _loggedFirstMapInit = true;
+                    string msg = $"[MiniDayZ Companion IPC] Primeiro companion_map_init recebido no C# ({rawMap.Length} chars).";
+                    Debug.WriteLine(msg);
+#if DEBUG
+                    Console.WriteLine(msg);
+#endif
+                }
+            }
+            return;
+        }
+
+        if (action == "companion_map_delta")
+        {
+            if (root.TryGetProperty("payload", out JsonElement deltaEl))
+            {
+                _companion.UpdateMapDelta(deltaEl.GetRawText());
+            }
+            return;
+        }
+
+        if (action == "companion_tick")
+        {
+            if (root.TryGetProperty("payload", out JsonElement tickEl))
+            {
+                string rawTick = tickEl.GetRawText();
+                _companion.UpdateTick(rawTick);
+
+                if (!_loggedFirstTick)
+                {
+                    _loggedFirstTick = true;
+                    string msg = $"[MiniDayZ Companion IPC] Primeiro companion_tick recebido no C# ({rawTick.Length} chars).";
+                    Debug.WriteLine(msg);
+#if DEBUG
+                    Console.WriteLine(msg);
+#endif
+                }
+            }
             return;
         }
 
@@ -286,6 +356,23 @@ public partial class MainWindow : Window
 
         return WebView.CoreWebView2.ExecuteScriptAsync(
             $"window.dispatchEvent(new CustomEvent('SaveLoaded', {{ detail: {{ key: {keyJs}, data: {dataJs} }} }}));");
+    }
+
+    private void OnCompanionWaypointReceived(string normalizedWaypointJson)
+    {
+        _ = Dispatcher.InvokeAsync(async () =>
+        {
+            if (WebView?.CoreWebView2 is null) return;
+            try
+            {
+                await WebView.CoreWebView2.ExecuteScriptAsync(
+                    $"window.dispatchEvent(new CustomEvent('CompanionWaypoint', {{ detail: {normalizedWaypointJson} }}));");
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"[MiniDayZ Companion] Erro ao injetar Waypoint no WebView2: {ex.Message}");
+            }
+        });
     }
 
 #if DEBUG
