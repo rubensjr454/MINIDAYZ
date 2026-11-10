@@ -55,7 +55,13 @@
 	    var has = Object.prototype.hasOwnProperty;
 
 	    // Cache síncrono hidratado pelo C# (AddScriptToExecuteOnDocumentCreated) antes deste script.
-	    var disk = window.__MDZ_SAVES__ || {};
+	    var all = window.__MDZ_SAVES__ || {};
+	    var disk = {}, lfCache = {};
+	    for (var k0 in all) {
+	      if (!has.call(all, k0)) continue;
+	      if (k0.indexOf('lf:') === 0) lfCache[k0.slice(3)] = all[k0]; else disk[k0] = all[k0];
+	    }
+	    window.__MDZ_LF__ = lfCache;
 	    var requested = {};
 	    var pending = {};
 
@@ -186,6 +192,98 @@
     <!-- The runtime script.  You can rename it, but don't forget to rename the reference here as well.
     This file will have been minified and obfuscated if you enabled "Minify script" during export. -->
 	<script src="c2runtime.js"></script>
+
+	<!-- MiniDayZ PC Port: o localforage (IndexedDB) é embutido no c2runtime com API de driver minificada;
+	     então sobrescrevo os métodos públicos da instância (defineProperty impede o setDriver de restaurá-los)
+	     e gravo via IPC em %LOCALAPPDATA%\MiniDayZ\Saves (chaves com prefixo "lf:"). -->
+	<script>
+	(function () {
+	  var lf = window.localforage, ipc = window.chrome && window.chrome.webview;
+	  if (!lf || !ipc) return;
+
+	  var P = 'lf:';
+	  var store = window.__MDZ_LF__ || {};
+	  var has = Object.prototype.hasOwnProperty;
+
+	  // Migração única: 1º boot sem saves em disco -> lê o IndexedDB antigo (sem apagá-lo) e envia ao C#.
+	  function readOldIndexedDb() {
+	    return new Promise(function (resolve) {
+	      var out = {};
+	      try {
+	        var req = indexedDB.open('localforage');
+	        req.onupgradeneeded = function (e) { try { e.target.transaction.abort(); } catch (err) { } };
+	        req.onerror = function () { resolve(out); };
+	        req.onsuccess = function () {
+	          var db = req.result;
+	          if (!db.objectStoreNames.contains('keyvaluepairs')) { db.close(); resolve(out); return; }
+	          var cur = db.transaction('keyvaluepairs', 'readonly').objectStore('keyvaluepairs').openCursor();
+	          cur.onsuccess = function () {
+	            var c = cur.result;
+	            if (c) { if (typeof c.value === 'string') out[String(c.key)] = c.value; c.continue(); }
+	            else { db.close(); resolve(out); }
+	          };
+	          cur.onerror = function () { db.close(); resolve(out); };
+	        };
+	      } catch (e) { resolve(out); }
+	    });
+	  }
+
+	  var ready = window.__MDZ_FIRST_BOOT__
+	    ? readOldIndexedDb().then(function (old) {
+	        for (var k in old) {
+	          if (!has.call(old, k) || has.call(store, k)) continue;
+	          store[k] = old[k];
+	          ipc.postMessage({ action: 'save', key: P + k, data: old[k] });
+	        }
+	      })
+	    : Promise.resolve();
+
+	  function api(fn) {
+	    return function () {
+	      var args = [].slice.call(arguments);
+	      var cb = typeof args[args.length - 1] === 'function' ? args.pop() : null;
+	      var p = ready.then(function () { return fn.apply(null, args); });
+	      if (cb) p.then(function (v) { cb(null, v); }, function (e) { cb(e); });
+	      return p;
+	    };
+	  }
+
+	  var impl = {
+	    getItem: function (k) { k = String(k); return has.call(store, k) ? store[k] : null; },
+	    setItem: function (k, v) {
+	      k = String(k);
+	      if (typeof v !== 'string') v = JSON.stringify(v);
+	      store[k] = v;
+	      ipc.postMessage({ action: 'save', key: P + k, data: v });
+	      return v;
+	    },
+	    removeItem: function (k) {
+	      k = String(k);
+	      delete store[k];
+	      ipc.postMessage({ action: 'delete', key: P + k });
+	    },
+	    clear: function () {
+	      Object.keys(store).forEach(function (k) { ipc.postMessage({ action: 'delete', key: P + k }); });
+	      store = {};
+	    },
+	    keys: function () { return Object.keys(store); },
+	    length: function () { return Object.keys(store).length; },
+	    key: function (n) { var ks = Object.keys(store); return n >= 0 && n < ks.length ? ks[n] : null; },
+	    iterate: function (fn) {
+	      var ks = Object.keys(store);
+	      for (var i = 0; i < ks.length; i++) {
+	        var r = fn(store[ks[i]], ks[i], i + 1);
+	        if (r !== undefined) return r;
+	      }
+	    }
+	  };
+
+	  Object.keys(impl).forEach(function (name) {
+	    var f = api(impl[name]);
+	    Object.defineProperty(lf, name, { configurable: true, enumerable: true, get: function () { return f; }, set: function () { } });
+	  });
+	})();
+	</script>
 
     <script>
 		// Start the Construct 2 project running on window load.

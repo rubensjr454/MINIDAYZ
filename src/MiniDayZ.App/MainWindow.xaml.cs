@@ -1,5 +1,4 @@
 using System.ComponentModel;
-using System.Diagnostics;
 using System.IO;
 using System.Text.Json;
 using System.Windows;
@@ -12,6 +11,7 @@ namespace MiniDayZ.App;
 public partial class MainWindow : Window
 {
     private bool _isSafeToClose = false;
+    private bool _isClosing = false;
     private bool _loggedFirstMapInit = false;
     private bool _loggedFirstTick = false;
     private readonly PcControlsManager _controls;
@@ -44,27 +44,51 @@ public partial class MainWindow : Window
 
     private async void MainWindow_Closing(object? sender, CancelEventArgs e)
     {
-        if (!_isSafeToClose)
+        if (_isSafeToClose) return;
+
+        if (_isClosing)
         {
-            if (WebView?.CoreWebView2 is null)
-            {
-                _isSafeToClose = true;
-                return;
-            }
-
             e.Cancel = true;
-
-            try
-            {
-                await WebView.CoreWebView2.ExecuteScriptAsync(
-                    "window.chrome.webview.postMessage(JSON.stringify({ action: 'save_on_close', data: JSON.stringify(localStorage) }));");
-            }
-            catch
-            {
-                _isSafeToClose = true;
-                Application.Current.Shutdown();
-            }
+            return;
         }
+
+        _isClosing = true;
+
+        if (WebView?.CoreWebView2 is null)
+        {
+            FinishClose();
+            return;
+        }
+
+        e.Cancel = true;
+        _ = ForceCloseAfterAsync(TimeSpan.FromSeconds(3));
+
+        try
+        {
+            await WebView.CoreWebView2.ExecuteScriptAsync(
+                "window.chrome.webview.postMessage(JSON.stringify({ action: 'save_on_close', data: JSON.stringify(localStorage) }));");
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("Falha pedindo save_on_close", ex);
+            FinishClose();
+        }
+    }
+
+    private async Task ForceCloseAfterAsync(TimeSpan delay)
+    {
+        await Task.Delay(delay);
+        if (_isSafeToClose) return;
+        Logger.Warn("save_on_close sem resposta; forçando fechamento.");
+        FinishClose();
+    }
+
+    private void FinishClose()
+    {
+        if (_isSafeToClose) return;
+        _isSafeToClose = true;
+        SaveSystem.Flush(TimeSpan.FromSeconds(2));
+        Application.Current.Shutdown();
     }
 
     private async Task InitializeAsync()
@@ -99,7 +123,8 @@ public partial class MainWindow : Window
             core.NavigationCompleted += (_, _) => WebView.Focus();
 
             // Hidrata os saves do disco e metadados do Companion ANTES de qualquer script da página.
-            string savesJson = JsonSerializer.Serialize(SaveSystem.LoadAll());
+            var saves = SaveSystem.LoadAll();
+            string savesJson = JsonSerializer.Serialize(saves);
             string companionJson = JsonSerializer.Serialize(new
             {
                 url = _companion.Url,
@@ -108,15 +133,16 @@ public partial class MainWindow : Window
                 isRunning = _companion.IsRunning,
                 isLocalhostFallback = _companion.IsLocalhostFallback
             });
+            string firstBoot = saves.Count == 0 ? "true" : "false";
             await core.AddScriptToExecuteOnDocumentCreatedAsync(
-                $"window.__MDZ_SAVES__ = {savesJson}; window.__MDZ_COMPANION__ = {companionJson};");
+                $"window.__MDZ_SAVES__ = {savesJson}; window.__MDZ_FIRST_BOOT__ = {firstBoot}; window.__MDZ_COMPANION__ = {companionJson};");
 
 #if DEBUG
             await AttachConsoleLoggingAsync(core);
 #endif
 
             string indexPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "wwwroot", "index.html");
-            Debug.WriteLine($"[MiniDayZ] Arquivo físico: {indexPath}");
+            Logger.Info($"Arquivo físico: {indexPath}");
 
             // O runtime do Construct 2 carrega data.js/áudio via XHR, que o Chromium bloqueia (CORS) em file://.
             // Mapeamos a MESMA pasta física para um host virtual HTTPS (resolvido localmente, sem rede/servidor).
@@ -132,6 +158,15 @@ public partial class MainWindow : Window
             MessageBox.Show(
                 "O Microsoft Edge WebView2 Runtime não está instalado.\n" +
                 "Baixe em: https://developer.microsoft.com/microsoft-edge/webview2/",
+                "Mini DayZ", MessageBoxButton.OK, MessageBoxImage.Error);
+            Close();
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("Falha na inicialização", ex);
+            MessageBox.Show(
+                "Não foi possível iniciar o jogo.\n" +
+                "Detalhes em %LOCALAPPDATA%\\MiniDayZ\\logs\\app.log",
                 "Mini DayZ", MessageBoxButton.OK, MessageBoxImage.Error);
             Close();
         }
@@ -182,7 +217,7 @@ public partial class MainWindow : Window
                     return;
                 }
 
-                Debug.WriteLine($"[MiniDayZ IPC] {strMsg}");
+                Logger.Info($"[IPC] {strMsg}");
                 return;
             }
 
@@ -192,14 +227,11 @@ public partial class MainWindow : Window
                 return;
             }
 
-            Debug.WriteLine($"[MiniDayZ IPC] Mensagem ignorada: {json}");
+            Logger.Warn($"[IPC] Mensagem ignorada: {json}");
         }
         catch (Exception ex)
         {
-            Debug.WriteLine($"[MiniDayZ IPC] Erro: {ex}");
-#if DEBUG
-            Console.WriteLine($"[MiniDayZ IPC] Erro: {ex.Message}");
-#endif
+            Logger.Error("[IPC] Erro", ex);
         }
     }
 
@@ -228,11 +260,7 @@ public partial class MainWindow : Window
                 if (!_loggedFirstMapInit)
                 {
                     _loggedFirstMapInit = true;
-                    string msg = $"[MiniDayZ Companion IPC] Primeiro companion_map_init recebido no C# ({rawMap.Length} chars).";
-                    Debug.WriteLine(msg);
-#if DEBUG
-                    Console.WriteLine(msg);
-#endif
+                    Logger.Info($"[Companion IPC] Primeiro companion_map_init recebido no C# ({rawMap.Length} chars).");
                 }
             }
             return;
@@ -257,11 +285,7 @@ public partial class MainWindow : Window
                 if (!_loggedFirstTick)
                 {
                     _loggedFirstTick = true;
-                    string msg = $"[MiniDayZ Companion IPC] Primeiro companion_tick recebido no C# ({rawTick.Length} chars).";
-                    Debug.WriteLine(msg);
-#if DEBUG
-                    Console.WriteLine(msg);
-#endif
+                    Logger.Info($"[Companion IPC] Primeiro companion_tick recebido no C# ({rawTick.Length} chars).");
                 }
             }
             return;
@@ -279,35 +303,23 @@ public partial class MainWindow : Window
                         if (!string.IsNullOrEmpty(rawStorage))
                         {
                             using var storageDoc = JsonDocument.Parse(rawStorage);
-                            if (storageDoc.RootElement.ValueKind == JsonValueKind.Object)
-                            {
-                                foreach (JsonProperty prop in storageDoc.RootElement.EnumerateObject())
-                                {
-                                    string val = prop.Value.ValueKind == JsonValueKind.String
-                                        ? prop.Value.GetString()!
-                                        : prop.Value.GetRawText();
-                                    SaveSystem.Save(prop.Name, val);
-                                }
-                            }
+                            SaveAllProps(storageDoc.RootElement);
                         }
                     }
-                    else if (closeDataEl.ValueKind == JsonValueKind.Object)
+                    else
                     {
-                        foreach (JsonProperty prop in closeDataEl.EnumerateObject())
-                        {
-                            string val = prop.Value.ValueKind == JsonValueKind.String
-                                ? prop.Value.GetString()!
-                                : prop.Value.GetRawText();
-                            SaveSystem.Save(prop.Name, val);
-                        }
+                        SaveAllProps(closeDataEl);
                     }
                 }
             }
+            catch (Exception ex)
+            {
+                Logger.Error("save_on_close", ex);
+            }
             finally
             {
-                Debug.WriteLine("[MiniDayZ IPC] save_on_close concluído.");
-                _isSafeToClose = true;
-                Application.Current.Shutdown();
+                Logger.Info("save_on_close concluído.");
+                FinishClose();
             }
             return;
         }
@@ -319,6 +331,7 @@ public partial class MainWindow : Window
         }
 
         string key = keyEl.GetString()!;
+        if (key.Length == 0) return;
 
         switch (action)
         {
@@ -328,23 +341,39 @@ public partial class MainWindow : Window
                     ? dataEl.GetString()!
                     : string.Empty;
                 SaveSystem.Save(key, data);
-                Debug.WriteLine($"[MiniDayZ IPC] save '{key}' ({data.Length} chars)");
                 break;
 
             case "load":
-                string? result = SaveSystem.Load(key);
-                Debug.WriteLine($"[MiniDayZ IPC] load '{key}' ({(result is null ? "null" : $"{result.Length} chars")})");
-                _ = SendSaveLoadedAsync(key, result);
+                _ = SendSaveLoadedAsync(key, SaveSystem.Load(key));
                 break;
 
             case "delete":
                 SaveSystem.Delete(key);
-                Debug.WriteLine($"[MiniDayZ IPC] delete '{key}'");
                 break;
 
             default:
-                Debug.WriteLine($"[MiniDayZ IPC] Ação desconhecida: {action}");
+                Logger.Warn($"[IPC] Ação desconhecida: {action}");
                 break;
+        }
+    }
+
+    private static void SaveAllProps(JsonElement obj)
+    {
+        if (obj.ValueKind != JsonValueKind.Object) return;
+
+        foreach (JsonProperty prop in obj.EnumerateObject())
+        {
+            try
+            {
+                string val = prop.Value.ValueKind == JsonValueKind.String
+                    ? prop.Value.GetString()!
+                    : prop.Value.GetRawText();
+                SaveSystem.Save(prop.Name, val);
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"save_on_close: falha na chave '{prop.Name}'", ex);
+            }
         }
     }
 
@@ -370,7 +399,7 @@ public partial class MainWindow : Window
             }
             catch (Exception ex)
             {
-                Debug.WriteLine($"[MiniDayZ Companion] Erro ao injetar Waypoint no WebView2: {ex.Message}");
+                Logger.Warn($"[Companion] Erro ao injetar Waypoint no WebView2: {ex.Message}");
             }
         });
     }
@@ -382,11 +411,11 @@ public partial class MainWindow : Window
     private static async Task AttachConsoleLoggingAsync(CoreWebView2 core)
     {
         core.GetDevToolsProtocolEventReceiver("Log.entryAdded").DevToolsProtocolEventReceived +=
-            (_, e) => Debug.WriteLine($"[MiniDayZ JS log] {e.ParameterObjectAsJson}");
+            (_, e) => Logger.Info($"[JS log] {e.ParameterObjectAsJson}");
         core.GetDevToolsProtocolEventReceiver("Runtime.consoleAPICalled").DevToolsProtocolEventReceived +=
-            (_, e) => Debug.WriteLine($"[MiniDayZ JS console] {e.ParameterObjectAsJson}");
+            (_, e) => Logger.Info($"[JS console] {e.ParameterObjectAsJson}");
         core.GetDevToolsProtocolEventReceiver("Runtime.exceptionThrown").DevToolsProtocolEventReceived +=
-            (_, e) => Debug.WriteLine($"[MiniDayZ JS exception] {e.ParameterObjectAsJson}");
+            (_, e) => Logger.Error($"[JS exception] {e.ParameterObjectAsJson}");
 
         await core.CallDevToolsProtocolMethodAsync("Log.enable", "{}");
         await core.CallDevToolsProtocolMethodAsync("Runtime.enable", "{}");
