@@ -1,45 +1,57 @@
 using System.Collections.Concurrent;
-using System.Diagnostics;
 using System.IO;
 using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Threading.Channels;
 
 namespace MiniDayZ.App.Companion;
 
 /// <summary>
 /// Servidor LAN ultraleve (.NET 8 TcpListener HTTP/1.1 + Server-Sent Events) para o Radar Tático Mobile / 2º Monitor.
-/// Não exige privilégios de Administrador (sem URLACL do HTTP.sys), roda 100% fora da UI Thread
-/// e transmite telemetria 1Hz + sincronização reversa de Waypoint com custo mínimo de CPU/RAM.
+/// Só roda quando o usuário liga o toggle na aba F1. Exige token por sessão em toda rota.
 /// </summary>
 public sealed class CompanionServer : IDisposable
 {
     private const int PreferredPort = 8080;
     private const int MaxPortAttempts = 10;
+    private const int MaxConnections = 32;
+    private const int MaxSseClients = 4;
+    private const int SseQueueCapacity = 64;
+    private static readonly TimeSpan WriteTimeout = TimeSpan.FromSeconds(5);
 
-    private readonly CancellationTokenSource _cts = new();
     private readonly ConcurrentDictionary<int, SseClient> _sseClients = new();
     private readonly ConcurrentDictionary<string, byte[]> _imageCache = new(StringComparer.OrdinalIgnoreCase);
     private readonly string _imagesDir;
     private readonly byte[] _radarHtmlBytes;
+    private readonly SemaphoreSlim _connSlots = new(MaxConnections, MaxConnections);
+    private readonly List<TcpListener> _listeners = new();
+    private readonly List<Task> _loopTasks = new();
+    private readonly object _stateLock = new();
 
-    private TcpListener? _listener;
+    private CancellationTokenSource? _cts;
     private PeriodicTimer? _keepAliveTimer;
+    private byte[] _tokenBytes = Array.Empty<byte>();
+    private HashSet<string> _allowedHosts = new(StringComparer.OrdinalIgnoreCase);
     private int _nextClientId;
 
     private volatile string _latestMapInitJson = "null";
     private volatile string _latestTickJson = "null";
     private volatile string _latestWaypointJson = "null";
+    private double _mapWidth;
+    private double _mapHeight;
     private readonly List<string> _mapDeltas = new();
     private readonly object _deltaLock = new();
 
     public string HostIp { get; private set; } = "127.0.0.1";
     public int Port { get; private set; } = PreferredPort;
+    public string Token { get; private set; } = string.Empty;
     public bool IsRunning { get; private set; }
     public bool IsLocalhostFallback { get; private set; }
-    public string Url => $"http://{HostIp}:{Port}";
+    public string Url => IsRunning ? $"http://{HostIp}:{Port}/?t={Token}" : string.Empty;
 
     /// <summary>
     /// Disparado quando o usuário marca ou limpa um Waypoint tocando na tela do celular.
@@ -51,47 +63,85 @@ public sealed class CompanionServer : IDisposable
     {
         _imagesDir = Path.GetFullPath(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "wwwroot", "images"));
         string htmlPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "wwwroot", "companion", "mobile-radar.html");
-        if (File.Exists(htmlPath))
-        {
-            _radarHtmlBytes = File.ReadAllBytes(htmlPath);
-        }
-        else
-        {
-            _radarHtmlBytes = Encoding.UTF8.GetBytes("<!DOCTYPE html><html><body style='background:#111;color:#eee;font-family:monospace'>Radar Mobile nao encontrado em wwwroot/companion/mobile-radar.html</body></html>");
-        }
+        _radarHtmlBytes = File.Exists(htmlPath)
+            ? File.ReadAllBytes(htmlPath)
+            : Encoding.UTF8.GetBytes("<!DOCTYPE html><html><body style='background:#111;color:#eee;font-family:monospace'>Radar Mobile nao encontrado em wwwroot/companion/mobile-radar.html</body></html>");
     }
 
     public void Start()
     {
-        if (IsRunning) return;
-
-        string detectedLanIp = DiscoverLanIp();
-
-        // Tenta escutar em todas as interfaces (LAN Wi-Fi + localhost) nas portas 8080..8089
-        if (TryBindListener(IPAddress.Any, out int boundPort))
+        lock (_stateLock)
         {
-            HostIp = detectedLanIp;
+            if (IsRunning) return;
+
+            string lanIp = DiscoverLanIp();
+            bool hasLan = lanIp != "127.0.0.1";
+
+            if (!TryBindListeners(hasLan ? IPAddress.Parse(lanIp) : null, out int boundPort))
+            {
+                Logger.Warn("[Companion] Falha ao iniciar servidor LAN/localhost.");
+                return;
+            }
+
             Port = boundPort;
-            IsLocalhostFallback = detectedLanIp == "127.0.0.1";
+            HostIp = hasLan ? lanIp : "127.0.0.1";
+            IsLocalhostFallback = !hasLan;
+            Token = Convert.ToHexString(RandomNumberGenerator.GetBytes(16)).ToLowerInvariant();
+            _tokenBytes = Encoding.UTF8.GetBytes(Token);
+            _allowedHosts = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            {
+                $"{HostIp}:{Port}", $"127.0.0.1:{Port}", $"localhost:{Port}"
+            };
+
+            _cts = new CancellationTokenSource();
             IsRunning = true;
+            CancellationToken ct = _cts.Token;
+
+            _loopTasks.Clear();
+            foreach (TcpListener l in _listeners)
+            {
+                TcpListener listener = l;
+                _loopTasks.Add(Task.Run(() => AcceptLoopAsync(listener, ct)));
+            }
+            _loopTasks.Add(Task.Run(() => KeepAliveLoopAsync(ct)));
+
+            Logger.Info($"[Companion] Radar LAN ativo em http://{HostIp}:{Port} (FallbackLocalhost={IsLocalhostFallback})");
         }
-        else if (TryBindListener(IPAddress.Loopback, out boundPort))
+    }
+
+    public void Stop()
+    {
+        CancellationTokenSource? cts;
+        List<Task> tasks;
+
+        lock (_stateLock)
         {
-            HostIp = "127.0.0.1";
-            Port = boundPort;
-            IsLocalhostFallback = true;
-            IsRunning = true;
-        }
-        else
-        {
-            Debug.WriteLine("[MiniDayZ Companion] Falha ao iniciar servidor LAN/localhost.");
-            return;
+            if (!IsRunning && _listeners.Count == 0) return;
+            IsRunning = false;
+            cts = _cts;
+            _cts = null;
+            tasks = _loopTasks.ToList();
+            _loopTasks.Clear();
         }
 
-        Debug.WriteLine($"[MiniDayZ Companion] Radar Tático LAN ativo em {Url} (FallbackLocalhost={IsLocalhostFallback})");
+        try { cts?.Cancel(); } catch { }
+        try { _keepAliveTimer?.Dispose(); } catch { }
+        foreach (TcpListener l in _listeners)
+        {
+            try { l.Stop(); } catch { }
+        }
+        _listeners.Clear();
 
-        _ = Task.Run(() => AcceptLoopAsync(_cts.Token));
-        _ = Task.Run(() => KeepAliveLoopAsync(_cts.Token));
+        foreach (KeyValuePair<int, SseClient> kv in _sseClients)
+            kv.Value.Dispose();
+        _sseClients.Clear();
+
+        try { Task.WaitAll(tasks.ToArray(), TimeSpan.FromSeconds(1)); } catch { }
+        cts?.Dispose();
+
+        Token = string.Empty;
+        _tokenBytes = Array.Empty<byte>();
+        Logger.Info("[Companion] Servidor parado.");
     }
 
     public void UpdateMapInit(string rawPayloadJson)
@@ -102,6 +152,7 @@ public sealed class CompanionServer : IDisposable
             _mapDeltas.Clear();
         }
         _latestMapInitJson = rawPayloadJson;
+        CacheMapBounds(rawPayloadJson);
         BroadcastSse("map_init", rawPayloadJson);
     }
 
@@ -132,24 +183,56 @@ public sealed class CompanionServer : IDisposable
         BroadcastSse("tick", rawPayloadJson);
     }
 
-    private bool TryBindListener(IPAddress bindAddress, out int boundPort)
+    private void CacheMapBounds(string rawMapJson)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(rawMapJson);
+            JsonElement r = doc.RootElement;
+            if (r.ValueKind == JsonValueKind.Object &&
+                r.TryGetProperty("width", out JsonElement w) && w.TryGetDouble(out double mw) &&
+                r.TryGetProperty("height", out JsonElement h) && h.TryGetDouble(out double mh))
+            {
+                _mapWidth = mw;
+                _mapHeight = mh;
+            }
+        }
+        catch (JsonException)
+        {
+        }
+    }
+
+    /// <summary>Escuta só no IP da LAN detectado (se houver) + loopback, ambos na mesma porta.</summary>
+    private bool TryBindListeners(IPAddress? lanAddress, out int boundPort)
     {
         for (int offset = 0; offset < MaxPortAttempts; offset++)
         {
-            int candidatePort = PreferredPort + offset;
-            TcpListener? candidate = null;
+            int port = PreferredPort + offset;
+            var started = new List<TcpListener>();
             try
             {
-                candidate = new TcpListener(bindAddress, candidatePort);
-                candidate.Server.ExclusiveAddressUse = false;
-                candidate.Start(backlog: 16);
-                _listener = candidate;
-                boundPort = candidatePort;
+                var addresses = lanAddress is null
+                    ? new[] { IPAddress.Loopback }
+                    : new[] { lanAddress, IPAddress.Loopback };
+
+                foreach (IPAddress addr in addresses)
+                {
+                    var l = new TcpListener(addr, port);
+                    l.Server.ExclusiveAddressUse = false;
+                    l.Start(backlog: 16);
+                    started.Add(l);
+                }
+
+                _listeners.AddRange(started);
+                boundPort = port;
                 return true;
             }
             catch (SocketException)
             {
-                try { candidate?.Stop(); } catch { }
+                foreach (TcpListener l in started)
+                {
+                    try { l.Stop(); } catch { }
+                }
             }
         }
 
@@ -157,15 +240,26 @@ public sealed class CompanionServer : IDisposable
         return false;
     }
 
-    private async Task AcceptLoopAsync(CancellationToken ct)
+    private async Task AcceptLoopAsync(TcpListener listener, CancellationToken ct)
     {
-        while (!ct.IsCancellationRequested && _listener is not null)
+        while (!ct.IsCancellationRequested)
         {
             try
             {
-                TcpClient client = await _listener.AcceptTcpClientAsync(ct).ConfigureAwait(false);
+                TcpClient client = await listener.AcceptTcpClientAsync(ct).ConfigureAwait(false);
+
+                if (!IsAllowedRemote(client) || !_connSlots.Wait(0))
+                {
+                    try { client.Dispose(); } catch { }
+                    continue;
+                }
+
                 client.NoDelay = true;
-                _ = Task.Run(() => HandleClientAsync(client, ct), CancellationToken.None);
+                _ = Task.Run(async () =>
+                {
+                    try { await HandleClientAsync(client, ct).ConfigureAwait(false); }
+                    finally { _connSlots.Release(); }
+                }, CancellationToken.None);
             }
             catch (OperationCanceledException)
             {
@@ -177,9 +271,46 @@ public sealed class CompanionServer : IDisposable
             }
             catch (Exception ex)
             {
-                Debug.WriteLine($"[MiniDayZ Companion] Accept erro: {ex.Message}");
+                Logger.Warn($"[Companion] Accept erro: {ex.Message}");
             }
         }
+    }
+
+    private static bool IsAllowedRemote(TcpClient client)
+    {
+        if (client.Client.RemoteEndPoint is not IPEndPoint ep) return false;
+
+        IPAddress ip = ep.Address.IsIPv4MappedToIPv6 ? ep.Address.MapToIPv4() : ep.Address;
+        if (ip.AddressFamily != AddressFamily.InterNetwork) return false;
+
+        byte[] b = ip.GetAddressBytes();
+        return b[0] == 10 ||
+               b[0] == 127 ||
+               (b[0] == 172 && b[1] >= 16 && b[1] <= 31) ||
+               (b[0] == 192 && b[1] == 168);
+    }
+
+    private bool IsAuthorized(string query, IReadOnlyDictionary<string, string> headers)
+    {
+        string? supplied = null;
+
+        foreach (string part in query.Split('&', StringSplitOptions.RemoveEmptyEntries))
+        {
+            int eq = part.IndexOf('=');
+            if (eq > 0 && part[..eq] == "t")
+            {
+                supplied = Uri.UnescapeDataString(part[(eq + 1)..]);
+                break;
+            }
+        }
+
+        if (supplied is null)
+            headers.TryGetValue("x-mdz-token", out supplied);
+
+        byte[] expected = _tokenBytes;
+        if (supplied is null || expected.Length == 0) return false;
+
+        return CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(supplied), expected);
     }
 
     private async Task HandleClientAsync(TcpClient client, CancellationToken ct)
@@ -191,24 +322,36 @@ public sealed class CompanionServer : IDisposable
         {
             stream = client.GetStream();
             using var ctsTimeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            ctsTimeout.CancelAfter(TimeSpan.FromSeconds(5));
+            ctsTimeout.CancelAfter(WriteTimeout);
 
-            (string method, string path, int contentLength, string bodyPreview) =
-                await ReadHttpRequestAsync(stream, ctsTimeout.Token).ConfigureAwait(false);
+            HttpRequest? req = await ReadHttpRequestAsync(stream, ctsTimeout.Token).ConfigureAwait(false);
+            if (req is null) return;
 
-            if (string.IsNullOrEmpty(method))
+            if (!req.Headers.TryGetValue("host", out string? host) || !_allowedHosts.Contains(host))
             {
+                await WriteHttpResponseAsync(stream, "400 Bad Request", "text/plain; charset=utf-8", Encoding.UTF8.GetBytes("Bad Host"), ctsTimeout.Token).ConfigureAwait(false);
                 return;
             }
 
-            if (method == "GET" && (path == "/" || path.StartsWith("/?", StringComparison.Ordinal) || path == "/index.html"))
+            int qIdx = req.Target.IndexOf('?');
+            string path = qIdx >= 0 ? req.Target[..qIdx] : req.Target;
+            string query = qIdx >= 0 ? req.Target[(qIdx + 1)..] : string.Empty;
+
+            if (!IsAuthorized(query, req.Headers))
             {
-                byte[] htmlBytes = GetPatchedRadarHtml();
-                await WriteHttpResponseAsync(stream, "200 OK", "text/html; charset=utf-8", htmlBytes, ct).ConfigureAwait(false);
+                await WriteHttpResponseAsync(stream, "401 Unauthorized", "text/plain; charset=utf-8", Encoding.UTF8.GetBytes("Unauthorized"), ctsTimeout.Token).ConfigureAwait(false);
                 return;
             }
 
-            if (method == "GET" && path.StartsWith("/state", StringComparison.Ordinal))
+            string method = req.Method;
+
+            if (method == "GET" && (path == "/" || path == "/index.html"))
+            {
+                await WriteHttpResponseAsync(stream, "200 OK", "text/html; charset=utf-8", _radarHtmlBytes, ctsTimeout.Token).ConfigureAwait(false);
+                return;
+            }
+
+            if (method == "GET" && path == "/state")
             {
                 string deltasJson;
                 lock (_deltaLock)
@@ -216,46 +359,43 @@ public sealed class CompanionServer : IDisposable
                     deltasJson = _mapDeltas.Count > 0 ? "[" + string.Join(",", _mapDeltas) + "]" : "[]";
                 }
                 string stateJson = $"{{\"map\":{_latestMapInitJson},\"deltas\":{deltasJson},\"tick\":{_latestTickJson},\"waypoint\":{_latestWaypointJson}}}";
-                byte[] stateBytes = Encoding.UTF8.GetBytes(stateJson);
-                await WriteHttpResponseAsync(stream, "200 OK", "application/json; charset=utf-8", stateBytes, ct).ConfigureAwait(false);
+                await WriteHttpResponseAsync(stream, "200 OK", "application/json; charset=utf-8", Encoding.UTF8.GetBytes(stateJson), ctsTimeout.Token).ConfigureAwait(false);
                 return;
             }
 
-            if (method == "GET" && path.StartsWith("/events", StringComparison.Ordinal))
+            if (method == "GET" && path == "/events")
             {
+                if (_sseClients.Count >= MaxSseClients)
+                {
+                    await WriteHttpResponseAsync(stream, "503 Service Unavailable", "text/plain; charset=utf-8", Encoding.UTF8.GetBytes("Too many streams"), ctsTimeout.Token).ConfigureAwait(false);
+                    return;
+                }
+
                 keepOpenForSse = true;
                 await HandleSseStreamAsync(client, stream, ct).ConfigureAwait(false);
                 return;
             }
 
-            if (method == "OPTIONS" && path.StartsWith("/waypoint", StringComparison.Ordinal))
+            if (method == "POST" && path == "/waypoint")
             {
-                await WriteHttpResponseAsync(stream, "204 No Content", "text/plain", Array.Empty<byte>(), ct).ConfigureAwait(false);
-                return;
-            }
-
-            if (method == "POST" && path.StartsWith("/waypoint", StringComparison.Ordinal))
-            {
-                string wpResponse = HandleWaypointPost(bodyPreview);
-                byte[] respBytes = Encoding.UTF8.GetBytes(wpResponse);
-                await WriteHttpResponseAsync(stream, "200 OK", "application/json; charset=utf-8", respBytes, ct).ConfigureAwait(false);
+                (string status, string json) = HandleWaypointPost(req.Body);
+                await WriteHttpResponseAsync(stream, status, "application/json; charset=utf-8", Encoding.UTF8.GetBytes(json), ctsTimeout.Token).ConfigureAwait(false);
                 return;
             }
 
             if (method == "GET" && path.StartsWith("/images/", StringComparison.OrdinalIgnoreCase))
             {
-                await HandleStaticImageRequestAsync(stream, path, ct).ConfigureAwait(false);
+                await HandleStaticImageRequestAsync(stream, path, ctsTimeout.Token).ConfigureAwait(false);
                 return;
             }
 
             if (method == "GET" && path == "/favicon.ico")
             {
-                await WriteHttpResponseAsync(stream, "204 No Content", "image/x-icon", Array.Empty<byte>(), ct).ConfigureAwait(false);
+                await WriteHttpResponseAsync(stream, "204 No Content", "image/x-icon", Array.Empty<byte>(), ctsTimeout.Token).ConfigureAwait(false);
                 return;
             }
 
-            byte[] notFound = Encoding.UTF8.GetBytes("Not Found");
-            await WriteHttpResponseAsync(stream, "404 Not Found", "text/plain; charset=utf-8", notFound, ct).ConfigureAwait(false);
+            await WriteHttpResponseAsync(stream, "404 Not Found", "text/plain; charset=utf-8", Encoding.UTF8.GetBytes("Not Found"), ctsTimeout.Token).ConfigureAwait(false);
         }
         catch
         {
@@ -271,8 +411,9 @@ public sealed class CompanionServer : IDisposable
         }
     }
 
-    private static async Task<(string Method, string Path, int ContentLength, string Body)> ReadHttpRequestAsync(
-        NetworkStream stream, CancellationToken ct)
+    private sealed record HttpRequest(string Method, string Target, Dictionary<string, string> Headers, string Body);
+
+    private static async Task<HttpRequest?> ReadHttpRequestAsync(NetworkStream stream, CancellationToken ct)
     {
         byte[] buffer = new byte[4096];
         int totalRead = 0;
@@ -288,36 +429,26 @@ public sealed class CompanionServer : IDisposable
             if (headerEnd >= 0) break;
         }
 
-        if (headerEnd < 0 || totalRead == 0)
-        {
-            return (string.Empty, string.Empty, 0, string.Empty);
-        }
+        if (headerEnd < 0 || totalRead == 0) return null;
 
         string headerText = Encoding.ASCII.GetString(buffer, 0, headerEnd);
         string[] lines = headerText.Split("\r\n", StringSplitOptions.RemoveEmptyEntries);
-        if (lines.Length == 0)
-        {
-            return (string.Empty, string.Empty, 0, string.Empty);
-        }
+        if (lines.Length == 0) return null;
 
         string[] firstLine = lines[0].Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        if (firstLine.Length < 2)
-        {
-            return (string.Empty, string.Empty, 0, string.Empty);
-        }
+        if (firstLine.Length < 2) return null;
 
-        string method = firstLine[0].ToUpperInvariant();
-        string path = firstLine[1];
-        int contentLength = 0;
-
+        var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         for (int i = 1; i < lines.Length; i++)
         {
-            if (lines[i].StartsWith("Content-Length:", StringComparison.OrdinalIgnoreCase))
-            {
-                _ = int.TryParse(lines[i].AsSpan("Content-Length:".Length).Trim(), out contentLength);
-                break;
-            }
+            int colon = lines[i].IndexOf(':');
+            if (colon > 0)
+                headers[lines[i][..colon].Trim()] = lines[i][(colon + 1)..].Trim();
         }
+
+        int contentLength = 0;
+        if (headers.TryGetValue("content-length", out string? cl))
+            _ = int.TryParse(cl, out contentLength);
 
         contentLength = Math.Clamp(contentLength, 0, 2048);
         int bodyStart = headerEnd + 4;
@@ -338,7 +469,7 @@ public sealed class CompanionServer : IDisposable
         }
 
         string body = contentLength > 0 ? Encoding.UTF8.GetString(bodyBytes, 0, bodyPos) : string.Empty;
-        return (method, path, contentLength, body);
+        return new HttpRequest(firstLine[0].ToUpperInvariant(), firstLine[1], headers, body);
     }
 
     private static int FindHeaderEnd(byte[] buf, int len)
@@ -353,10 +484,8 @@ public sealed class CompanionServer : IDisposable
         return -1;
     }
 
-    private async Task HandleStaticImageRequestAsync(NetworkStream stream, string rawPath, CancellationToken ct)
+    private async Task HandleStaticImageRequestAsync(NetworkStream stream, string cleanPath, CancellationToken ct)
     {
-        int qIdx = rawPath.IndexOf('?');
-        string cleanPath = qIdx >= 0 ? rawPath[..qIdx] : rawPath;
         string rawName = Uri.UnescapeDataString(cleanPath["/images/".Length..]);
         string safeFile = Path.GetFileName(rawName);
 
@@ -396,7 +525,7 @@ public sealed class CompanionServer : IDisposable
 
         await WriteHttpResponseAsync(
             stream, "200 OK", mime, imgBytes, ct,
-            cacheControl: "public, max-age=86400, immutable").ConfigureAwait(false);
+            cacheControl: "private, max-age=86400").ConfigureAwait(false);
     }
 
     private static async Task WriteHttpResponseAsync(
@@ -408,9 +537,7 @@ public sealed class CompanionServer : IDisposable
             $"Content-Type: {contentType}\r\n" +
             $"Content-Length: {body.Length}\r\n" +
             $"Cache-Control: {cacheControl}\r\n" +
-            "Access-Control-Allow-Origin: *\r\n" +
-            "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n" +
-            "Access-Control-Allow-Headers: Content-Type\r\n" +
+            "X-Content-Type-Options: nosniff\r\n" +
             "Connection: close\r\n\r\n";
 
         byte[] headerBytes = Encoding.ASCII.GetBytes(header);
@@ -422,104 +549,10 @@ public sealed class CompanionServer : IDisposable
         await stream.FlushAsync(ct).ConfigureAwait(false);
     }
 
-    private byte[] GetPatchedRadarHtml()
-    {
-        string? html = null;
-        string primaryPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "wwwroot", "companion", "mobile-radar.html");
-        string altPath = Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), "src", "MiniDayZ.App", "wwwroot", "companion", "mobile-radar.html"));
-
-        if (File.Exists(primaryPath))
-        {
-            try { html = File.ReadAllText(primaryPath, Encoding.UTF8); } catch { }
-        }
-        else if (File.Exists(altPath))
-        {
-            try { html = File.ReadAllText(altPath, Encoding.UTF8); } catch { }
-        }
-
-        if (string.IsNullOrEmpty(html) && _radarHtmlBytes.Length > 0)
-        {
-            html = Encoding.UTF8.GetString(_radarHtmlBytes);
-        }
-
-        if (string.IsNullOrEmpty(html))
-        {
-            return _radarHtmlBytes;
-        }
-
-        // Normaliza line endings para garantir match determinístico
-        html = html.Replace("\r\n", "\n");
-
-        // PASSO 1: Cabeçalho superior com islandLevel dinâmico (ILHA 2, ILHA 3, etc.)
-        html = html.Replace(
-            "var isl = mapData ? (mapData.island === 0 ? 'TUTORIAL' : ('ILHA ' + mapData.island)) : 'EM JOGO';",
-            "var islNum = (tickData && (tickData.islandLevel || tickData.island)) || (mapData && (mapData.islandLevel || mapData.island)) || 1;\n    var isl = islNum === 0 ? 'TUTORIAL' : ('ILHA ' + islNum);",
-            StringComparison.Ordinal);
-
-        // PASSO 1: Fim da sobreposição na troca de ilha - Limpa offscreen canvas e landmarks anteriores
-        html = html.Replace(
-            "tileSliceCache = {};\n    buildLandmarksIndex(data);\n    ensureMapTextures(data);\n    bakeStaticMap();",
-            "if (typeof staticCtx !== 'undefined' && staticCtx && typeof staticLayer !== 'undefined' && staticLayer) {\n      staticCtx.clearRect(0, 0, staticLayer.width, staticLayer.height);\n    }\n    landmarks = [];\n    tileSliceCache = {};\n    buildLandmarksIndex(data);\n    ensureMapTextures(data);\n    bakeStaticMap();",
-            StringComparison.Ordinal);
-
-        // PASSO 1: Garante clearRect dentro de bakeStaticMap()
-        html = html.Replace(
-            "resizeSurface(staticLayer, sw, sh);\n\n    staticCtx.save();",
-            "resizeSurface(staticLayer, sw, sh);\n    staticCtx.clearRect(0, 0, staticLayer.width, staticLayer.height);\n\n    staticCtx.save();",
-            StringComparison.Ordinal);
-
-        // PASSO 3: Rastreamento de Alvo da Missão (quest_target) no topo das camadas
-        if (!html.Contains("quest_target", StringComparison.OrdinalIgnoreCase))
-        {
-            string targetMarkerCode = @"
-      // C) Alvo Fixo da Missão (Bandidos, Maleta, Crate, Boss)
-      var qTgt = (typeof tickData !== 'undefined' && tickData && tickData.quest && tickData.quest.target) || (typeof tickData !== 'undefined' && tickData && tickData.quest_target);
-      if (qTgt && typeof qTgt.x === 'number' && typeof qTgt.y === 'number') {
-        var tgts = worldToScreen(qTgt.x, qTgt.y);
-        ctx.beginPath();
-        ctx.arc(tgts.x, tgts.y, 14 + pulse * 5, 0, Math.PI * 2);
-        ctx.strokeStyle = 'rgba(255, 82, 82, 0.95)';
-        ctx.lineWidth = 2.4;
-        ctx.stroke();
-
-        ctx.beginPath();
-        ctx.arc(tgts.x, tgts.y, 8, 0, Math.PI * 2);
-        ctx.fillStyle = '#ff5252';
-        ctx.fill();
-        ctx.strokeStyle = '#ffd54f';
-        ctx.lineWidth = 2;
-        ctx.stroke();
-
-        if (typeof tickData !== 'undefined' && tickData && tickData.player) {
-          var pScr = worldToScreen(tickData.player.x, tickData.player.y);
-          ctx.beginPath();
-          ctx.moveTo(pScr.x, pScr.y);
-          ctx.lineTo(tgts.x, tgts.y);
-          ctx.strokeStyle = 'rgba(255, 82, 82, 0.85)';
-          ctx.setLineDash([8, 6]);
-          ctx.lineWidth = 2.2;
-          ctx.stroke();
-          ctx.setLineDash([]);
-        }
-
-        var tgtLabel = '🎯 ' + (qTgt.label || 'Alvo da Missão');
-        registerInteractive(qTgt.x, qTgt.y, tgts.x, tgts.y, tgtLabel, '#ff5252', '🎯', 0);
-        labelQueue.push({ sx: tgts.x, sy: tgts.y, text: tgtLabel, color: '#ff5252', prio: 0, force: true });
-      }";
-
-            html = html.Replace(
-                "// 6. Waypoint Tático Sincronizado com o PC",
-                targetMarkerCode + "\n\n    // 6. Waypoint Tático Sincronizado com o PC",
-                StringComparison.Ordinal);
-        }
-
-        return Encoding.UTF8.GetBytes(html);
-    }
-
     private async Task HandleSseStreamAsync(TcpClient client, NetworkStream stream, CancellationToken ct)
     {
         int id = Interlocked.Increment(ref _nextClientId);
-        var sseClient = new SseClient(id, client, stream);
+        var sseClient = new SseClient(client, stream);
 
         try
         {
@@ -528,34 +561,24 @@ public sealed class CompanionServer : IDisposable
                 "Content-Type: text/event-stream; charset=utf-8\r\n" +
                 "Cache-Control: no-cache, no-transform\r\n" +
                 "Connection: keep-alive\r\n" +
-                "X-Accel-Buffering: no\r\n" +
-                "Access-Control-Allow-Origin: *\r\n\r\n" +
+                "X-Accel-Buffering: no\r\n\r\n" +
                 "retry: 1500\n\n");
 
-            await sseClient.SendRawAsync(sseHeaders, ct).ConfigureAwait(false);
+            sseClient.TryEnqueue(sseHeaders);
 
             if (_latestMapInitJson != "null")
-            {
-                await sseClient.SendRawAsync(FormatSseFrame("map_init", _latestMapInitJson), ct).ConfigureAwait(false);
-            }
+                sseClient.TryEnqueue(FormatSseFrame("map_init", _latestMapInitJson));
             if (_latestTickJson != "null")
-            {
-                await sseClient.SendRawAsync(FormatSseFrame("tick", _latestTickJson), ct).ConfigureAwait(false);
-            }
+                sseClient.TryEnqueue(FormatSseFrame("tick", _latestTickJson));
             if (_latestWaypointJson != "null")
-            {
-                await sseClient.SendRawAsync(FormatSseFrame("waypoint", _latestWaypointJson), ct).ConfigureAwait(false);
-            }
+                sseClient.TryEnqueue(FormatSseFrame("waypoint", _latestWaypointJson));
 
             _sseClients[id] = sseClient;
+            ClientCountChanged?.Invoke(_sseClients.Count);
 
-            // Aguarda encerramento pelo navegador cliente ou shutdown do servidor
-            byte[] probe = new byte[16];
-            while (!ct.IsCancellationRequested)
-            {
-                int read = await stream.ReadAsync(probe, ct).ConfigureAwait(false);
-                if (read <= 0) break;
-            }
+            Task writer = sseClient.RunWriterAsync(ct);
+            Task reader = DrainReadsAsync(stream, ct);
+            await Task.WhenAny(writer, reader).ConfigureAwait(false);
         }
         catch
         {
@@ -563,64 +586,83 @@ public sealed class CompanionServer : IDisposable
         }
         finally
         {
-            _sseClients.TryRemove(id, out _);
+            if (_sseClients.TryRemove(id, out _))
+                ClientCountChanged?.Invoke(_sseClients.Count);
             sseClient.Dispose();
         }
     }
 
-    private string HandleWaypointPost(string rawBody)
+    private static async Task DrainReadsAsync(NetworkStream stream, CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(rawBody))
+        byte[] probe = new byte[16];
+        while (!ct.IsCancellationRequested)
         {
-            return "{\"ok\":false}";
+            int read = await stream.ReadAsync(probe, ct).ConfigureAwait(false);
+            if (read <= 0) break;
         }
+    }
 
-        using var doc = JsonDocument.Parse(rawBody);
-        JsonElement root = doc.RootElement;
+    /// <summary>Número de clientes SSE conectados mudou.</summary>
+    public event Action<int>? ClientCountChanged;
+
+    private (string Status, string Json) HandleWaypointPost(string rawBody)
+    {
+        const string bad = "{\"ok\":false}";
+        if (string.IsNullOrWhiteSpace(rawBody)) return ("400 Bad Request", bad);
 
         string normalized;
-        if (root.TryGetProperty("clear", out JsonElement clearEl) && clearEl.ValueKind == JsonValueKind.True)
+        try
         {
-            normalized = "{\"clear\":true}";
-            _latestWaypointJson = "null";
+            using var doc = JsonDocument.Parse(rawBody);
+            JsonElement root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object) return ("400 Bad Request", bad);
+
+            if (root.TryGetProperty("clear", out JsonElement clearEl) && clearEl.ValueKind == JsonValueKind.True)
+            {
+                normalized = "{\"clear\":true}";
+                _latestWaypointJson = "null";
+            }
+            else if (root.TryGetProperty("x", out JsonElement xEl) && xEl.TryGetDouble(out double wx) &&
+                     root.TryGetProperty("y", out JsonElement yEl) && yEl.TryGetDouble(out double wy) &&
+                     double.IsFinite(wx) && double.IsFinite(wy) &&
+                     _mapWidth > 0 && _mapHeight > 0 &&
+                     wx >= 0 && wy >= 0 && wx <= _mapWidth && wy <= _mapHeight)
+            {
+                normalized = $"{{\"x\":{(int)Math.Round(wx)},\"y\":{(int)Math.Round(wy)}}}";
+                _latestWaypointJson = normalized;
+            }
+            else
+            {
+                return ("400 Bad Request", bad);
+            }
         }
-        else if (root.TryGetProperty("x", out JsonElement xEl) && xEl.TryGetDouble(out double wx) &&
-                 root.TryGetProperty("y", out JsonElement yEl) && yEl.TryGetDouble(out double wy))
+        catch (JsonException)
         {
-            int rx = (int)Math.Round(wx);
-            int ry = (int)Math.Round(wy);
-            normalized = $"{{\"x\":{rx},\"y\":{ry}}}";
-            _latestWaypointJson = normalized;
-        }
-        else
-        {
-            return "{\"ok\":false}";
+            return ("400 Bad Request", bad);
         }
 
         BroadcastSse("waypoint", normalized);
         WaypointReceived?.Invoke(normalized);
-        Debug.WriteLine($"[MiniDayZ Companion] Waypoint sincronizado do celular: {normalized}");
-        return "{\"ok\":true}";
+        return ("200 OK", "{\"ok\":true}");
     }
 
     private void BroadcastSse(string eventName, string rawJson)
     {
         if (_sseClients.IsEmpty) return;
-
-        byte[] frame = FormatSseFrame(eventName, rawJson);
-        foreach (KeyValuePair<int, SseClient> kv in _sseClients)
-        {
-            _ = PushToClientAsync(kv.Key, kv.Value, frame);
-        }
+        BroadcastFrame(FormatSseFrame(eventName, rawJson));
     }
 
-    private async Task PushToClientAsync(int id, SseClient client, byte[] frame)
+    private void BroadcastFrame(byte[] frame)
     {
-        if (!await client.SendRawAsync(frame, _cts.Token).ConfigureAwait(false))
+        foreach (KeyValuePair<int, SseClient> kv in _sseClients)
         {
-            if (_sseClients.TryRemove(id, out SseClient? removed))
+            if (kv.Value.TryEnqueue(frame)) continue;
+
+            // fila cheia = cliente lento: desconecta
+            if (_sseClients.TryRemove(kv.Key, out SseClient? removed))
             {
                 removed.Dispose();
+                ClientCountChanged?.Invoke(_sseClients.Count);
             }
         }
     }
@@ -633,11 +675,7 @@ public sealed class CompanionServer : IDisposable
         {
             while (await _keepAliveTimer.WaitForNextTickAsync(ct).ConfigureAwait(false))
             {
-                if (_sseClients.IsEmpty) continue;
-                foreach (KeyValuePair<int, SseClient> kv in _sseClients)
-                {
-                    _ = PushToClientAsync(kv.Key, kv.Value, pingBytes);
-                }
+                if (!_sseClients.IsEmpty) BroadcastFrame(pingBytes);
             }
         }
         catch (OperationCanceledException) { }
@@ -706,73 +744,44 @@ public sealed class CompanionServer : IDisposable
         return bestIp ?? "127.0.0.1";
     }
 
-    public void Dispose()
-    {
-        if (!IsRunning && _listener is null) return;
-        IsRunning = false;
-
-        try { _cts.Cancel(); } catch { }
-        try { _keepAliveTimer?.Dispose(); } catch { }
-        try { _listener?.Stop(); } catch { }
-
-        foreach (KeyValuePair<int, SseClient> kv in _sseClients)
-        {
-            kv.Value.Dispose();
-        }
-        _sseClients.Clear();
-        _cts.Dispose();
-    }
+    public void Dispose() => Stop();
 
     private sealed class SseClient : IDisposable
     {
         private readonly TcpClient _tcp;
         private readonly NetworkStream _stream;
-        private readonly SemaphoreSlim _writeLock = new(1, 1);
+        private readonly Channel<byte[]> _queue = Channel.CreateBounded<byte[]>(
+            new BoundedChannelOptions(SseQueueCapacity)
+            {
+                SingleReader = true,
+                FullMode = BoundedChannelFullMode.Wait
+            });
         private int _disposed;
 
-        public int Id { get; }
-
-        public SseClient(int id, TcpClient tcp, NetworkStream stream)
+        public SseClient(TcpClient tcp, NetworkStream stream)
         {
-            Id = id;
             _tcp = tcp;
             _stream = stream;
         }
 
-        public async Task<bool> SendRawAsync(byte[] data, CancellationToken ct)
+        public bool TryEnqueue(byte[] data) => _queue.Writer.TryWrite(data);
+
+        public async Task RunWriterAsync(CancellationToken ct)
         {
-            if (Volatile.Read(ref _disposed) != 0) return false;
-
-            bool entered = false;
-            try
+            await foreach (byte[] frame in _queue.Reader.ReadAllAsync(ct).ConfigureAwait(false))
             {
-                entered = await _writeLock.WaitAsync(TimeSpan.FromMilliseconds(800), ct).ConfigureAwait(false);
-                if (!entered || Volatile.Read(ref _disposed) != 0) return false;
-
-                await _stream.WriteAsync(data, ct).ConfigureAwait(false);
-                await _stream.FlushAsync(ct).ConfigureAwait(false);
-                return true;
-            }
-            catch
-            {
-                return false;
-            }
-            finally
-            {
-                if (entered)
-                {
-                    try { _writeLock.Release(); } catch { }
-                }
+                using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                cts.CancelAfter(WriteTimeout);
+                await _stream.WriteAsync(frame, cts.Token).ConfigureAwait(false);
             }
         }
 
         public void Dispose()
         {
             if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+            _queue.Writer.TryComplete();
             try { _stream.Dispose(); } catch { }
             try { _tcp.Dispose(); } catch { }
-            try { _writeLock.Dispose(); } catch { }
         }
     }
 }
-

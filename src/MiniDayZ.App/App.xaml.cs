@@ -5,8 +5,17 @@ namespace MiniDayZ.App;
 
 public partial class App : Application
 {
+    private static Mutex? _instanceMutex;
+
     protected override void OnStartup(StartupEventArgs e)
     {
+        _instanceMutex = new Mutex(true, "Local\\MiniDayZ.SingleInstance", out bool isFirst);
+        if (!isFirst)
+        {
+            Shutdown();
+            return;
+        }
+
         DispatcherUnhandledException += OnDispatcherUnhandledException;
         AppDomain.CurrentDomain.UnhandledException += (_, args) =>
             Logger.Error("AppDomain.UnhandledException", args.ExceptionObject as Exception);

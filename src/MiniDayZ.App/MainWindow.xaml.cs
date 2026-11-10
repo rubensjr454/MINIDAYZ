@@ -95,9 +95,6 @@ public partial class MainWindow : Window
     {
         try
         {
-            // Inicia o servidor LAN ultraleve imediatamente em background sem bloquear a UI Thread.
-            _companion.Start();
-
             var options = new CoreWebView2EnvironmentOptions
             {
                 AdditionalBrowserArguments = BrowserArguments
@@ -121,18 +118,12 @@ public partial class MainWindow : Window
             // Ponte IPC (JS -> C#)
             core.WebMessageReceived += OnWebMessageReceived;
             core.NavigationCompleted += (_, _) => WebView.Focus();
+            ConfigureNavigationGuards(core);
 
             // Hidrata os saves do disco e metadados do Companion ANTES de qualquer script da página.
             var saves = SaveSystem.LoadAll();
             string savesJson = JsonSerializer.Serialize(saves);
-            string companionJson = JsonSerializer.Serialize(new
-            {
-                url = _companion.Url,
-                ip = _companion.HostIp,
-                port = _companion.Port,
-                isRunning = _companion.IsRunning,
-                isLocalhostFallback = _companion.IsLocalhostFallback
-            });
+            string companionJson = CompanionStateJson();
             string firstBoot = saves.Count == 0 ? "true" : "false";
             await core.AddScriptToExecuteOnDocumentCreatedAsync(
                 $"window.__MDZ_SAVES__ = {savesJson}; window.__MDZ_FIRST_BOOT__ = {firstBoot}; window.__MDZ_COMPANION__ = {companionJson};");
@@ -250,6 +241,12 @@ public partial class MainWindow : Window
             return;
         }
 
+        if (action == "companion_start" || action == "companion_stop")
+        {
+            _ = SetCompanionRunningAsync(action == "companion_start");
+            return;
+        }
+
         if (action == "companion_map_init")
         {
             if (root.TryGetProperty("payload", out JsonElement mapEl))
@@ -355,6 +352,91 @@ public partial class MainWindow : Window
                 Logger.Warn($"[IPC] Ação desconhecida: {action}");
                 break;
         }
+    }
+
+    private string CompanionStateJson() => JsonSerializer.Serialize(new
+    {
+        url = _companion.Url,
+        ip = _companion.HostIp,
+        port = _companion.Port,
+        isRunning = _companion.IsRunning,
+        isLocalhostFallback = _companion.IsLocalhostFallback
+    });
+
+    private async Task SetCompanionRunningAsync(bool run)
+    {
+        try
+        {
+            await Task.Run(() => { if (run) _companion.Start(); else _companion.Stop(); });
+            if (WebView?.CoreWebView2 is null) return;
+            await WebView.CoreWebView2.ExecuteScriptAsync(
+                $"window.__MDZ_COMPANION__ = {CompanionStateJson()}; window.dispatchEvent(new CustomEvent('CompanionState', {{ detail: window.__MDZ_COMPANION__ }}));");
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("Falha alternando Companion", ex);
+        }
+    }
+
+    private static readonly string[] OpenExternalHosts =
+        { "minidayz.com", "www.minidayz.com", "store.bistudio.com" };
+
+    private static bool IsAllowedExternalUrl(Uri uri)
+    {
+        if (uri.Scheme != Uri.UriSchemeHttps && uri.Scheme != Uri.UriSchemeHttp) return false;
+
+        string host = uri.Host.ToLowerInvariant();
+        if (OpenExternalHosts.Contains(host)) return true;
+
+        if (host is "facebook.com" or "www.facebook.com")
+            return uri.AbsolutePath.StartsWith("/MINIDAYZGAME", StringComparison.OrdinalIgnoreCase);
+
+        if (host is "vk.com" or "www.vk.com")
+            return uri.AbsolutePath.StartsWith("/mini_dayz", StringComparison.OrdinalIgnoreCase);
+
+        return false;
+    }
+
+    private static void ConfigureNavigationGuards(CoreWebView2 core)
+    {
+        string origin = $"https://{VirtualHost}/";
+
+        core.NavigationStarting += (_, e) =>
+        {
+            if (!e.Uri.StartsWith(origin, StringComparison.OrdinalIgnoreCase) &&
+                !e.Uri.StartsWith("about:blank", StringComparison.OrdinalIgnoreCase))
+            {
+                e.Cancel = true;
+            }
+        };
+
+        core.NewWindowRequested += (_, e) =>
+        {
+            e.Handled = true;
+            if (Uri.TryCreate(e.Uri, UriKind.Absolute, out Uri? uri) && IsAllowedExternalUrl(uri))
+            {
+                try
+                {
+                    System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(uri.AbsoluteUri) { UseShellExecute = true });
+                }
+                catch (Exception ex)
+                {
+                    Logger.Warn($"Falha abrindo link externo: {ex.Message}");
+                }
+            }
+        };
+
+        core.AddWebResourceRequestedFilter("*", CoreWebView2WebResourceContext.All);
+        core.WebResourceRequested += (_, e) =>
+        {
+            if (!Uri.TryCreate(e.Request.Uri, UriKind.Absolute, out Uri? uri)) return;
+            if (uri.Scheme != Uri.UriSchemeHttps && uri.Scheme != Uri.UriSchemeHttp) return;
+
+            string host = uri.Host.ToLowerInvariant();
+            if (host == VirtualHost || host == "account.bistudio.com") return;
+
+            e.Response = core.Environment.CreateWebResourceResponse(null, 403, "Blocked", string.Empty);
+        };
     }
 
     private static void SaveAllProps(JsonElement obj)

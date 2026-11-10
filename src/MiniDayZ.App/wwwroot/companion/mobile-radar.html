@@ -204,6 +204,7 @@
 
 <script>
 (function () {
+  var TOKEN = new URLSearchParams(window.location.search).get('t') || '';
   'use strict';
 
   var PX_PER_METER = 22;
@@ -402,7 +403,7 @@
           rec.status = 'err';
           updateTextureBadge();
         };
-        im.src = '/images/' + encodeURIComponent(fileName);
+        im.src = '/images/' + encodeURIComponent(fileName) + '?t=' + encodeURIComponent(TOKEN);
       })(fn);
     }
 
@@ -597,6 +598,7 @@
     var sw = Math.max(256, Math.round(mw * staticScale));
     var sh = Math.max(256, Math.round(mh * staticScale));
     resizeSurface(staticLayer, sw, sh);
+    staticCtx.clearRect(0, 0, staticLayer.width, staticLayer.height);
 
     staticCtx.save();
     staticCtx.imageSmoothingEnabled = true;
@@ -956,7 +958,8 @@
     }
 
     waitBanner.style.display = 'none';
-    var isl = mapData ? (mapData.island === 0 ? 'TUTORIAL' : ('ILHA ' + mapData.island)) : 'EM JOGO';
+    var islNum = (tickData && (tickData.islandLevel || tickData.island)) || (mapData && (mapData.islandLevel || mapData.island)) || 1;
+    var isl = islNum === 0 ? 'TUTORIAL' : ('ILHA ' + islNum);
     if (tickData && tickData.player) {
       var p = tickData.player;
       hudTitle.textContent = isl + (p.inBunker ? ' [BUNKER]' : '') + ' • DIA ' + p.day + ' ' + p.clock;
@@ -1456,6 +1459,41 @@
       }
     }
 
+      // C) Alvo Fixo da Missão (Bandidos, Maleta, Crate, Boss)
+      var qTgt = (typeof tickData !== 'undefined' && tickData && tickData.quest && tickData.quest.target) || (typeof tickData !== 'undefined' && tickData && tickData.quest_target);
+      if (qTgt && typeof qTgt.x === 'number' && typeof qTgt.y === 'number') {
+        var tgts = worldToScreen(qTgt.x, qTgt.y);
+        ctx.beginPath();
+        ctx.arc(tgts.x, tgts.y, 14 + pulse * 5, 0, Math.PI * 2);
+        ctx.strokeStyle = 'rgba(255, 82, 82, 0.95)';
+        ctx.lineWidth = 2.4;
+        ctx.stroke();
+
+        ctx.beginPath();
+        ctx.arc(tgts.x, tgts.y, 8, 0, Math.PI * 2);
+        ctx.fillStyle = '#ff5252';
+        ctx.fill();
+        ctx.strokeStyle = '#ffd54f';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+
+        if (typeof tickData !== 'undefined' && tickData && tickData.player) {
+          var pScr = worldToScreen(tickData.player.x, tickData.player.y);
+          ctx.beginPath();
+          ctx.moveTo(pScr.x, pScr.y);
+          ctx.lineTo(tgts.x, tgts.y);
+          ctx.strokeStyle = 'rgba(255, 82, 82, 0.85)';
+          ctx.setLineDash([8, 6]);
+          ctx.lineWidth = 2.2;
+          ctx.stroke();
+          ctx.setLineDash([]);
+        }
+
+        var tgtLabel = '🎯 ' + (qTgt.label || 'Alvo da Missão');
+        registerInteractive(qTgt.x, qTgt.y, tgts.x, tgts.y, tgtLabel, '#ff5252', '🎯', 0);
+        labelQueue.push({ sx: tgts.x, sy: tgts.y, text: tgtLabel, color: '#ff5252', prio: 0, force: true });
+      }
+
     // 6. Waypoint Tático Sincronizado com o PC (sempre exibe distância em metros)
     if (waypoint) {
       var ws = worldToScreen(waypoint.x, waypoint.y);
@@ -1575,7 +1613,7 @@
 
   function sendWaypoint(wx, wy, clear) {
     var body = clear ? { clear: true } : { x: Math.round(wx), y: Math.round(wy) };
-    fetch('/waypoint', {
+    fetch('/waypoint?t=' + encodeURIComponent(TOKEN), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body)
@@ -1734,6 +1772,10 @@
     if (!data) return;
     var firstLoad = !mapData || mapData.isFallback || mapData.island !== data.island || mapData.layout !== data.layout;
     mapData = data;
+    if (typeof staticCtx !== 'undefined' && staticCtx && typeof staticLayer !== 'undefined' && staticLayer) {
+      staticCtx.clearRect(0, 0, staticLayer.width, staticLayer.height);
+    }
+    landmarks = [];
     tileSliceCache = {};
     buildLandmarksIndex(data);
     ensureMapTextures(data);
@@ -1843,7 +1885,7 @@
   }
 
   function fetchStateSnapshot() {
-    fetch('/state').then(function (r) { return r.json(); }).then(function (st) {
+    fetch('/state?t=' + encodeURIComponent(TOKEN)).then(function (r) { return r.json(); }).then(function (st) {
       sseConnected = true;
       if (st.map) applyMapInit(st.map);
       if (st.deltas && st.deltas.length) {
@@ -1863,7 +1905,7 @@
   }, 2500);
 
   function connectSse() {
-    var es = new EventSource('/events');
+    var es = new EventSource('/events?t=' + encodeURIComponent(TOKEN));
     es.onopen = function () {
       sseConnected = true;
       updateHudText();

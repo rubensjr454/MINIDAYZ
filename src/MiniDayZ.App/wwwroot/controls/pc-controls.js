@@ -531,8 +531,7 @@
     function buildControlsTabUI() {
         if (document.getElementById('mdz-controls-root')) return;
 
-        const comp = window.__MDZ_COMPANION__ || { url: 'http://127.0.0.1:8080', isLocalhostFallback: true };
-        const companionUrl = comp.url || 'http://127.0.0.1:8080';
+        let companionUrl = (window.__MDZ_COMPANION__ && window.__MDZ_COMPANION__.url) || "";
 
         const style = document.createElement('style');
         style.id = 'mdz-controls-style';
@@ -589,10 +588,11 @@
             '      <span>📡 RADAR TÁTICO MOBILE (LAN)</span>',
             '      <span style="font-size:10px;color:#9ccc65;">1Hz SSE</span>',
             '    </div>',
-            '    <div class="mdz-comp-body">',
+            '    <label class="mdz-cp-foot" style="margin:0 0 6px;padding:0;"><input type="checkbox" id="mdz-comp-toggle" /> Ativar Radar Mobile</label>',
+            '    <div class="mdz-comp-body" id="mdz-comp-body" style="display:none;">',
             '      <canvas id="mdz-qr-canvas" title="Escaneie com a câmera do celular"></canvas>',
             '      <div class="mdz-comp-info">',
-            '        <div class="mdz-comp-url" id="mdz-comp-url">' + companionUrl + '</div>',
+            '        <div class="mdz-comp-url" id="mdz-comp-url"></div>',
             '        <div class="mdz-comp-hint">Escaneie o QR Code no celular (mesmo Wi-Fi) ou abra no 2º monitor.</div>',
             '        <button type="button" class="mdz-comp-copy" id="mdz-comp-copy">Copiar Link</button>',
             '      </div>',
@@ -610,7 +610,29 @@
         const qrCanvasEl = document.getElementById('mdz-qr-canvas');
         const copyBtnEl = document.getElementById('mdz-comp-copy');
 
-        renderQrCanvas(qrCanvasEl, companionUrl);
+        const toggleEl = document.getElementById('mdz-comp-toggle');
+        const compBodyEl = document.getElementById('mdz-comp-body');
+        const compUrlEl = document.getElementById('mdz-comp-url');
+
+        function applyCompanionState(st) {
+            companionUrl = (st && st.isRunning && st.url) || '';
+            toggleEl.checked = !!companionUrl;
+            toggleEl.disabled = false;
+            compBodyEl.style.display = companionUrl ? 'flex' : 'none';
+            compUrlEl.textContent = companionUrl;
+            if (companionUrl) renderQrCanvas(qrCanvasEl, companionUrl);
+        }
+
+        applyCompanionState(window.__MDZ_COMPANION__);
+
+        toggleEl.addEventListener('change', function () {
+            toggleEl.disabled = true;
+            window.chrome.webview.postMessage({ action: toggleEl.checked ? 'companion_start' : 'companion_stop' });
+        });
+
+        window.addEventListener('CompanionState', function (e) {
+            applyCompanionState(e.detail);
+        });
 
         stopCanvasLeak(tabBtnEl);
         stopCanvasLeak(panelEl);

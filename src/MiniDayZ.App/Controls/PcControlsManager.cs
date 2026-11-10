@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Text.Json;
 using System.Windows.Input;
 using Microsoft.Web.WebView2.Wpf;
@@ -153,8 +152,7 @@ public sealed class PcControlsManager
 
     private static void Log(string message)
     {
-        Debug.WriteLine(message);
-        Console.WriteLine(message);
+        Logger.Info(message);
     }
 }
 
