@@ -263,6 +263,8 @@
 (function () {
   'use strict';
   var TOKEN = new URLSearchParams(window.location.search).get('t') || '';
+  // ?demo=1: carrega demo/state.json (mesmo formato do /state) para ajustar o visual sem o jogo; servir a pasta companion por HTTP local
+  const DEMO = new URLSearchParams(window.location.search).get('demo') === '1';
 
   var PX_PER_METER = 22;
   var LABEL_ZOOM_THRESHOLD = 0.095; // Oculta rótulos fixos em zoom distante para nunca tampar ruas/prédios
@@ -537,24 +539,78 @@
   // =========================================================================
   // CARREGAMENTO ASSÍNCRONO DE TEXTURAS REAIS DO JOGO (/images/*)
   // =========================================================================
-  let overviewDirty = false;
+  let overviewTimer = 0;
 
-  function scheduleRebake(withOverview) {
-    if (withOverview) overviewDirty = true;
+  function texturesLoading() {
+    for (const k in imgCache) {
+      if (imgCache[k].status === 'loading') return true;
+    }
+    return false;
+  }
+
+  // Carga inicial (texturas chegando) usa debounce maior para não refazer o bake várias vezes
+  function scheduleRebake() {
     if (rebakeTimer) return;
     rebakeTimer = window.setTimeout(function () {
       rebakeTimer = 0;
-      if (overviewDirty) {
-        overviewDirty = false;
-        rebuildVector();
-      }
       bakeStaticMap();
-    }, 110);
+    }, texturesLoading() ? 450 : 110);
+  }
+
+  // Delta: só refaz estradas reais + mancha urbana do overview
+  function scheduleOverviewDelta() {
+    if (overviewTimer) return;
+    overviewTimer = window.setTimeout(function () {
+      overviewTimer = 0;
+      if (!mapData || !mapData.__masks) return;
+      mapData.__masks.urban = buildUrbanMask(mapData, mapData.__masks);
+      buildRoadNetwork(mapData);
+      bakeOverview();
+    }, 300);
+  }
+
+  // Desenha só os tilemaps/prédios novos por cima do bake existente
+  function bakeDelta(tms, blds) {
+    if (rebakeTimer || !staticLayer.width) return;
+    staticCtx.save();
+    staticCtx.imageSmoothingEnabled = true;
+    staticCtx.scale(staticScale, staticScale);
+    drawTilemapList(tms);
+    drawBuildingList(blds);
+    staticCtx.restore();
+    invalidate();
+  }
+
+  function buildingKey(x, y) {
+    return Math.floor(x / 36) + ',' + Math.floor(y / 36);
+  }
+
+  function buildingIndex() {
+    if (mapData.__bIdx) return mapData.__bIdx;
+    const idx = new Map();
+    const blds = mapData.buildings || [];
+    for (let i = 0; i < blds.length; i++) idx.set(buildingKey(blds[i][0], blds[i][1]), i);
+    mapData.__bIdx = idx;
+    return idx;
+  }
+
+  function findNearBuilding(idx, x, y) {
+    const cx = Math.floor(x / 36), cy = Math.floor(y / 36);
+    for (let dy = -1; dy <= 1; dy++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        const i = idx.get((cx + dx) + ',' + (cy + dy));
+        if (i === undefined) continue;
+        const b = mapData.buildings[i];
+        if (Math.abs(b[0] - x) <= 36 && Math.abs(b[1] - y) <= 36) return i;
+      }
+    }
+    return -1;
   }
 
   function rebuildVector() {
     if (!mapData) return;
     mapData.__masks = null;
+    mapData.__bIdx = null;
     THEME = isWinterMap(mapData) ? THEME_WINTER : THEME_SUMMER;
     buildRoadNetwork(mapData);
     bakeOverview();
@@ -898,6 +954,26 @@
     c.restore();
   }
 
+  // Atlas: cada ícone pré-renderizado uma vez em OffscreenCanvas e só copiado por frame
+  const iconAtlas = new Map();
+
+  function drawIcon(key, x, y, r, glyph) {
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const k = key + '|' + r + '|' + (glyph || '') + '|' + dpr;
+    let s = iconAtlas.get(k);
+    if (!s) {
+      const st = ICON_STYLE[key];
+      const half = Math.ceil(r * ((st && st.size) || 1) * 1.6 + 3);
+      const surf = createOffscreenSurface(half * 2 * dpr, half * 2 * dpr);
+      const c = surf.getContext('2d');
+      c.scale(dpr, dpr);
+      drawIconShape(c, key, half, half, r, glyph);
+      s = { surf: surf, half: half };
+      iconAtlas.set(k, s);
+    }
+    ctx.drawImage(s.surf, x - s.half, y - s.half, s.half * 2, s.half * 2);
+  }
+
   // Agrupa ícones do mesmo tipo a menos de CLUSTER_PX na tela
   function clusterIcons(items) {
     const out = [];
@@ -929,7 +1005,7 @@
   function drawCountBadge(sx, sy, n) {
     const t = n > 99 ? '99+' : String(n);
     ctx.font = 'bold 9px Consolas, monospace';
-    const w = Math.max(13, ctx.measureText(t).width + 6);
+    const w = Math.max(13, textW('badge9', t) + 6);
     const bx = sx + 6;
     const by = sy - 15;
     ctx.fillStyle = '#ffffff';
@@ -1053,6 +1129,24 @@
     }
     const code = function (i) { return codes ? codes[i] : 0; };
 
+    const isLand = new Uint8Array(cols * rows);
+    for (let i = 0; i < isLand.length; i++) isLand[i] = inGrid[i] && code(i) !== 3 ? 1 : 0;
+
+    const m = {
+      cols: cols, rows: rows, cellPx: cellPx, isLand: isLand, codes: codes,
+      land: makeMask(cols, rows, THEME.field, function (i) { return inGrid[i] && code(i) !== 3; }),
+      halo: makeMask(cols, rows, THEME.coast, function (i) { return inGrid[i] && code(i) !== 3; }),
+      water: makeMask(cols, rows, THEME.coast, function (i) { return inGrid[i] && code(i) === 3; }),
+      sand: makeMask(cols, rows, THEME.sand, function (i) { return inGrid[i] && code(i) === 2; }),
+      forest: makeMask(cols, rows, THEME.forest, function (i) { return inGrid[i] && code(i) === 1; }),
+      bunker: makeMask(cols, rows, THEME.bunker, function (i) { return code(i) === 5; })
+    };
+    m.urban = buildUrbanMask(data, m);
+    return m;
+  }
+
+  function buildUrbanMask(data, m) {
+    const cols = m.cols, rows = m.rows, cellPx = m.cellPx;
     const urban = new Uint8Array(cols * rows);
     const blds = data.buildings || [];
     for (let i = 0; i < blds.length; i++) {
@@ -1067,20 +1161,7 @@
         }
       }
     }
-
-    const isLand = new Uint8Array(cols * rows);
-    for (let i = 0; i < isLand.length; i++) isLand[i] = inGrid[i] && code(i) !== 3 ? 1 : 0;
-
-    return {
-      cols: cols, rows: rows, cellPx: cellPx, isLand: isLand,
-      land: makeMask(cols, rows, THEME.field, function (i) { return inGrid[i] && code(i) !== 3; }),
-      halo: makeMask(cols, rows, THEME.coast, function (i) { return inGrid[i] && code(i) !== 3; }),
-      water: makeMask(cols, rows, THEME.coast, function (i) { return inGrid[i] && code(i) === 3; }),
-      sand: makeMask(cols, rows, THEME.sand, function (i) { return inGrid[i] && code(i) === 2; }),
-      forest: makeMask(cols, rows, THEME.forest, function (i) { return inGrid[i] && code(i) === 1; }),
-      bunker: makeMask(cols, rows, THEME.bunker, function (i) { return code(i) === 5; }),
-      urban: makeMask(cols, rows, THEME.urban, function (i) { return urban[i] && code(i) !== 3; })
-    };
+    return makeMask(cols, rows, THEME.urban, function (i) { return urban[i] && !(m.codes && m.codes[i] === 3); });
   }
 
   function landPath(m) {
@@ -1214,7 +1295,7 @@
     overviewScale = Math.min(0.08, OVERVIEW_MAX_DIM / Math.max(mw, mh));
     resizeSurface(overviewLayer, Math.max(64, Math.round(mw * overviewScale)), Math.max(64, Math.round(mh * overviewScale)));
     const o = overviewCtx;
-    const m = buildTerrainMasks(mapData);
+    const m = mapData.__masks || buildTerrainMasks(mapData);
     mapData.__masks = m;
     const cellOnCanvas = m.cellPx * overviewScale;
 
@@ -1232,6 +1313,7 @@
     drawMask(o, m.bunker, m);
     drawMask(o, m.urban, m, 'drop-shadow(0 0 1px ' + THEME.building + ')', THEME.urbanAlpha);
     o.restore();
+    invalidate();
   }
 
   // =========================================================================
@@ -1338,7 +1420,68 @@
     }
 
     // 5. Tilemaps Reais do Construct 2 (Estradas conectadas, Cruzamentos, Praias, Lagos, Florestas)
-    var tms = mapData.tilemaps || [];
+    drawTilemapList(mapData.tilemaps || []);
+
+    // 6. Muros, Cercas, Barreiras Militares HESCO e Carros Estáticos de Rua
+    var props = mapData.props || [];
+    for (var pi = 0; pi < props.length; pi++) {
+      var pr = props[pi];
+      if (!drawSpriteInstance(staticCtx, pr[0], pr[1], pr[2], pr[3], pr[4], pr[5])) {
+        staticCtx.save();
+        staticCtx.translate(pr[1], pr[2]);
+        if (pr[5]) staticCtx.rotate(pr[5]);
+        staticCtx.fillStyle = 'rgba(72, 68, 60, 0.85)';
+        var pw = Math.abs(pr[3]);
+        var ph = Math.abs(pr[4]);
+        staticCtx.fillRect(-pw * 0.5, -ph * 0.5, pw, ph);
+        staticCtx.restore();
+      }
+    }
+
+    // 7. Telhados Reais de Todas as Construções + Sombra Aérea + Contorno Tático Sutil
+    drawBuildingList(mapData.buildings || []);
+
+    // 8. Copas de Árvores e Blocos de Floresta (alpha 0.90 preserva visibilidade de estradas adjacentes)
+    var trees = mapData.trees || [];
+    if (trees.length) {
+      staticCtx.save();
+      staticCtx.globalAlpha = 0.90;
+      for (var tri = 0; tri < trees.length; tri++) {
+        var tr = trees[tri];
+        if (!drawSpriteInstance(staticCtx, tr[0], tr[1], tr[2], tr[3], tr[4], 0)) {
+          staticCtx.fillStyle = isWinter ? 'rgba(92, 110, 104, 0.65)' : 'rgba(38, 56, 30, 0.65)';
+          staticCtx.beginPath();
+          staticCtx.arc(tr[1], tr[2], Math.max(18, Math.abs(tr[3]) * 0.38), 0, Math.PI * 2);
+          staticCtx.fill();
+        }
+      }
+      staticCtx.restore();
+    }
+
+    // 9. Grade Tática de Coordenadas (A1..P16 / A1..J10) gravada direto no OffscreenCanvas
+    var gSpec = getGridSpec();
+
+    // Marca d'água sutil do código de cada quadrante (ex.: A1, F8, J10) no canto superior esquerdo do setor
+    staticCtx.font = 'bold 92px Consolas, monospace';
+    staticCtx.fillStyle = 'rgba(235, 245, 220, 0.16)';
+    staticCtx.textAlign = 'left';
+    staticCtx.textBaseline = 'top';
+    for (var sc = 0; sc < gSpec.cols; sc++) {
+      var colStr = colLetters(sc);
+      for (var sr = 0; sr < gSpec.rows; sr++) {
+        var sx0 = gSpec.originX + sc * gSpec.cellW + 34;
+        var sy0 = gSpec.originY + sr * gSpec.cellH + 28;
+        if (sx0 >= 0 && sy0 >= 0 && sx0 < mw - 80 && sy0 < mh - 60) {
+          staticCtx.fillText(colStr + (sr + 1), sx0, sy0);
+        }
+      }
+    }
+
+    staticCtx.restore();
+    invalidate();
+  }
+
+  function drawTilemapList(tms) {
     for (var mi = 0; mi < tms.length; mi++) {
       var tm = tms[mi];
       var tmImgIdx = tm[0];
@@ -1410,24 +1553,9 @@
         }
       }
     }
+  }
 
-    // 6. Muros, Cercas, Barreiras Militares HESCO e Carros Estáticos de Rua
-    var props = mapData.props || [];
-    for (var pi = 0; pi < props.length; pi++) {
-      var pr = props[pi];
-      if (!drawSpriteInstance(staticCtx, pr[0], pr[1], pr[2], pr[3], pr[4], pr[5])) {
-        staticCtx.save();
-        staticCtx.translate(pr[1], pr[2]);
-        if (pr[5]) staticCtx.rotate(pr[5]);
-        staticCtx.fillStyle = 'rgba(72, 68, 60, 0.85)';
-        var pw = Math.abs(pr[3]);
-        var ph = Math.abs(pr[4]);
-        staticCtx.fillRect(-pw * 0.5, -ph * 0.5, pw, ph);
-        staticCtx.restore();
-      }
-    }
-
-    // 7. Telhados Reais de Todas as Construções + Sombra Aérea + Contorno Tático Sutil
+  function drawBuildingList(blds) {
     var roofFallbackColors = {
       mil: '#4e5d42',
       med: '#5c7c89',
@@ -1445,7 +1573,6 @@
       pump: '#3f7c99',
       bridge: '#66635b'
     };
-    var blds = mapData.buildings || [];
     for (var bi = 0; bi < blds.length; bi++) {
       var b = blds[bi];
       var bx = b[0];
@@ -1491,44 +1618,6 @@
         staticCtx.restore();
       }
     }
-
-    // 8. Copas de Árvores e Blocos de Floresta (alpha 0.90 preserva visibilidade de estradas adjacentes)
-    var trees = mapData.trees || [];
-    if (trees.length) {
-      staticCtx.save();
-      staticCtx.globalAlpha = 0.90;
-      for (var tri = 0; tri < trees.length; tri++) {
-        var tr = trees[tri];
-        if (!drawSpriteInstance(staticCtx, tr[0], tr[1], tr[2], tr[3], tr[4], 0)) {
-          staticCtx.fillStyle = isWinter ? 'rgba(92, 110, 104, 0.65)' : 'rgba(38, 56, 30, 0.65)';
-          staticCtx.beginPath();
-          staticCtx.arc(tr[1], tr[2], Math.max(18, Math.abs(tr[3]) * 0.38), 0, Math.PI * 2);
-          staticCtx.fill();
-        }
-      }
-      staticCtx.restore();
-    }
-
-    // 9. Grade Tática de Coordenadas (A1..P16 / A1..J10) gravada direto no OffscreenCanvas
-    var gSpec = getGridSpec();
-
-    // Marca d'água sutil do código de cada quadrante (ex.: A1, F8, J10) no canto superior esquerdo do setor
-    staticCtx.font = 'bold 92px Consolas, monospace';
-    staticCtx.fillStyle = 'rgba(235, 245, 220, 0.16)';
-    staticCtx.textAlign = 'left';
-    staticCtx.textBaseline = 'top';
-    for (var sc = 0; sc < gSpec.cols; sc++) {
-      var colStr = colLetters(sc);
-      for (var sr = 0; sr < gSpec.rows; sr++) {
-        var sx0 = gSpec.originX + sc * gSpec.cellW + 34;
-        var sy0 = gSpec.originY + sr * gSpec.cellH + 28;
-        if (sx0 >= 0 && sy0 >= 0 && sx0 < mw - 80 && sy0 < mh - 60) {
-          staticCtx.fillText(colStr + (sr + 1), sx0, sy0);
-        }
-      }
-    }
-
-    staticCtx.restore();
   }
 
   // =========================================================================
@@ -1629,6 +1718,7 @@
     updatePoiCard();
     updateFilterCounts();
     measureChrome();
+    invalidate();
   }
 
   function worldToScreen(wx, wy) {
@@ -1663,10 +1753,25 @@
     ctx.closePath();
   }
 
+  const textWCache = new Map();
+
+  // Largura de texto cacheada por fonte+string (ctx.font já deve estar setado com a mesma fonte)
+  function textW(font, text) {
+    const k = font + '|' + text;
+    let w = textWCache.get(k);
+    if (w === undefined) {
+      if (textWCache.size > 4000) textWCache.clear();
+      w = ctx.measureText(text).width;
+      textWCache.set(k, w);
+    }
+    return w;
+  }
+
   // Renderiza caixa de texto somente se não colidir com outro rótulo já posicionado na tela
   function tryDrawLabelBox(sx, sy, text, color, placedRects, forceShow) {
-    ctx.font = 'bold 10.5px Consolas, "Segoe UI", monospace';
-    var tw = Math.ceil(ctx.measureText(text).width) + 12;
+    const font = 'bold 10.5px Consolas, "Segoe UI", monospace';
+    ctx.font = font;
+    var tw = Math.ceil(textW(font, text)) + 12;
     var th = 16;
     var rx = Math.round(sx - tw * 0.5);
     var ry = Math.round(sy + 12);
@@ -1786,8 +1891,9 @@
       const pn = placeNames[i];
       const s = worldToScreen(pn.x, pn.y);
       if (s.x < -80 || s.y < -20 || s.x > vw + 80 || s.y > vh + 20) continue;
-      ctx.font = '700 ' + pn.size + 'px "Segoe UI", system-ui, sans-serif';
-      const w = ctx.measureText(pn.text).width;
+      const pnFont = '700 ' + pn.size + 'px "Segoe UI", system-ui, sans-serif';
+      ctx.font = pnFont;
+      const w = textW('ls1.5|' + pnFont, pn.text);
       const h = pn.size + 4;
       let hit = false;
       for (let k = 0; k < placed.length; k++) {
@@ -1990,8 +2096,11 @@
       setFollow(true);
     }
     if (cam.follow && tickData && tickData.player) {
-      cam.x += (tickData.player.x - cam.x) * 0.22;
-      cam.y += (tickData.player.y - cam.y) * 0.22;
+      const fdx = tickData.player.x - cam.x;
+      const fdy = tickData.player.y - cam.y;
+      cam.x += fdx * 0.22;
+      cam.y += fdy * 0.22;
+      if (Math.abs(fdx) * cam.zoom > 0.3 || Math.abs(fdy) * cam.zoom > 0.3) dirty = true;
     }
 
     // 1. Blit único da Visão de Satélite em cache (0% overhead de CPU!)
@@ -2114,7 +2223,7 @@
         ctx.stroke();
         ctx.globalAlpha = 1;
       }
-      drawIconShape(ctx, it.type, it.sx, it.sy, r);
+      drawIcon(it.type, it.sx, it.sy, r);
       if (it.count > 1) drawCountBadge(it.sx, it.sy, it.count);
       registerInteractive(it.x, it.y, it.sx, it.sy, it.count > 1 ? st.name + ' ×' + it.count : it.label, st.color, '', st.prio || 4);
     }
@@ -2142,7 +2251,7 @@
         ctx.lineWidth = 2.2;
         ctx.stroke();
 
-        drawIconShape(ctx, 'quest', gvS.x, gvS.y, 8, qIcon);
+        drawIcon('quest', gvS.x, gvS.y, 8, qIcon);
         if (isDone) {
           ctx.beginPath();
           ctx.arc(gvS.x, gvS.y, 8, 0, Math.PI * 2);
@@ -2185,7 +2294,7 @@
         ctx.strokeStyle = 'rgba(77, 208, 225, 0.85)';
         ctx.lineWidth = 2.2;
         ctx.stroke();
-        drawIconShape(ctx, 'qitem', its.x, its.y, 8);
+        drawIcon('qitem', its.x, its.y, 8);
 
         if (tickData.player) {
           let pItem = worldToScreen(tickData.player.x, tickData.player.y);
@@ -2221,7 +2330,7 @@
         ctx.strokeStyle = 'rgba(255, 82, 82, 0.6)';
         ctx.lineWidth = 2;
         ctx.stroke();
-        drawIconShape(ctx, 'target', tgts.x, tgts.y, 8);
+        drawIcon('target', tgts.x, tgts.y, 8);
 
         if (tickData.player) {
           let pTgt = worldToScreen(tickData.player.x, tickData.player.y);
@@ -2307,8 +2416,29 @@
     else offscreenHit = null;
 
     positionPoiCard();
-    window.requestAnimationFrame(renderFrame);
   }
+
+  // Dirty flag: redesenha ao mudar algo; senão só o pulso a ~18 FPS
+  const PULSE_FRAME_MS = 55;
+  let dirty = true;
+  let lastDraw = 0;
+
+  function invalidate() {
+    dirty = true;
+  }
+
+  function renderLoop(ts) {
+    window.requestAnimationFrame(renderLoop);
+    if (!dirty && ts - lastDraw < PULSE_FRAME_MS) return;
+    dirty = false;
+    lastDraw = ts;
+    renderFrame();
+  }
+
+  ['pointerdown', 'pointermove', 'pointerup', 'wheel', 'click', 'change'].forEach(function (ev) {
+    document.addEventListener(ev, invalidate, { capture: true, passive: true });
+  });
+  window.addEventListener('resize', invalidate);
 
   // =========================================================================
   // INTERAÇÃO TÁTICA: HOVER, TOQUE EM ÍCONES, PINCH-TO-ZOOM E WAYPOINT
@@ -2340,6 +2470,7 @@
   }
 
   function sendWaypoint(wx, wy, clear) {
+    if (DEMO) return;
     var body = clear ? { clear: true } : { x: Math.round(wx), y: Math.round(wy) };
     fetch('/waypoint?t=' + encodeURIComponent(TOKEN), {
       method: 'POST',
@@ -2678,31 +2809,35 @@
       sprRemap[s] = newIdx;
     }
 
+    const newTms = [];
     var dTms = delta.tilemaps || [];
     for (var t = 0; t < dTms.length; t++) {
       var tm = dTms[t].slice();
       tm[0] = imgRemap[tm[0]] !== undefined ? imgRemap[tm[0]] : tm[0];
       mapData.tilemaps.push(tm);
+      newTms.push(tm);
     }
 
+    const newBlds = [];
+    const bIdx = buildingIndex();
     var dBlds = delta.buildings || [];
     for (var b = 0; b < dBlds.length; b++) {
       var nb = dBlds[b].slice();
       if (nb[6] >= 0 && sprRemap[nb[6]] !== undefined) nb[6] = sprRemap[nb[6]];
-      var replaced = false;
-      for (var eb = 0; eb < mapData.buildings.length; eb++) {
-        var oldB = mapData.buildings[eb];
-        if (Math.abs(oldB[0] - nb[0]) <= 36 && Math.abs(oldB[1] - nb[1]) <= 36) {
-          mapData.buildings[eb] = nb;
-          replaced = true;
-          break;
-        }
+      const at = findNearBuilding(bIdx, nb[0], nb[1]);
+      if (at >= 0) {
+        mapData.buildings[at] = nb;
+      } else {
+        bIdx.set(buildingKey(nb[0], nb[1]), mapData.buildings.length);
+        mapData.buildings.push(nb);
       }
-      if (!replaced) mapData.buildings.push(nb);
+      newBlds.push(nb);
     }
 
     ensureMapTextures(mapData);
-    scheduleRebake(true);
+    buildLandmarksIndex(mapData);
+    bakeDelta(newTms, newBlds);
+    scheduleOverviewDelta();
   }
 
   function applyTick(data) {
@@ -2754,13 +2889,16 @@
   let fetchFails = 0;
 
   function fetchStateSnapshot() {
-    fetch('/state?t=' + encodeURIComponent(TOKEN)).then(function (r) { return r.json(); }).then(function (st) {
+    fetch(DEMO ? 'demo/state.json' : '/state?t=' + encodeURIComponent(TOKEN)).then(function (r) { return r.json(); }).then(function (st) {
       sseConnected = true;
       fetchFails = 0;
       pcSilent = false;
-      if (st.map) applyMapInit(st.map);
-      if (st.deltas && st.deltas.length) {
-        for (var d = 0; d < st.deltas.length; d++) applyMapDelta(st.deltas[d]);
+      const sameMap = !!(st.map && mapData && !mapData.isFallback && st.map.mapHash && st.map.mapHash === mapData.mapHash);
+      if (st.map && !sameMap) {
+        applyMapInit(st.map);
+        if (st.deltas && st.deltas.length) {
+          for (var d = 0; d < st.deltas.length; d++) applyMapDelta(st.deltas[d]);
+        }
       }
       if (st.tick) applyTick(st.tick);
       applyWaypoint(st.waypoint);
@@ -2780,6 +2918,7 @@
   }, 2500);
 
   function connectSse() {
+    if (DEMO) return;
     var es = new EventSource('/events?t=' + encodeURIComponent(TOKEN));
     es.onopen = function () {
       sseConnected = true;
@@ -2806,7 +2945,7 @@
   }
 
   connectSse();
-  window.requestAnimationFrame(renderFrame);
+  window.requestAnimationFrame(renderLoop);
 })();
 </script>
 </body>
