@@ -129,6 +129,26 @@
     background: rgba(12, 16, 12, 0.93); border: 1px solid var(--border); border-radius: 10px;
     padding: 16px 20px; text-align: center; z-index: 6; max-width: 88vw; pointer-events: none;
   }
+  #prog-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; width: 100%; font-size: 11px; }
+  .xp-wrap { flex: 1 1 100%; position: relative; height: 18px; }
+  .xp-bar { position: absolute; inset: 0; background: rgba(255,255,255,0.08); border: 1px solid rgba(255, 213, 79, 0.45); border-radius: 4px; overflow: hidden; }
+  #xp-fill { height: 100%; width: 0; background: linear-gradient(90deg, #b28704, #ffd54f); transition: width 0.4s; }
+  .xp-wrap.ready .xp-bar { border-color: #76ff03; box-shadow: 0 0 8px rgba(118, 255, 3, 0.6); }
+  .xp-wrap.ready #xp-fill { background: linear-gradient(90deg, #33691e, #76ff03); }
+  #xp-txt { position: relative; display: block; text-align: center; line-height: 18px; font-weight: 700; color: #fff; text-shadow: 0 1px 2px #000; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 0 4px; }
+  .karma-good { color: #69f0ae; border-color: rgba(105, 240, 174, 0.5); }
+  .karma-bad { color: #ff8a80; border-color: rgba(255, 138, 128, 0.5); }
+  #nearby-box { margin-top: 8px; padding-top: 7px; border-top: 1px solid rgba(140, 172, 98, 0.25); }
+  .nb-head { font-size: 11px; font-weight: 700; color: var(--accent); margin-bottom: 4px; }
+  #nearby { display: flex; flex-direction: column; gap: 3px; }
+  .nb-item {
+    display: flex; align-items: center; gap: 7px; width: 100%; min-height: 32px; padding: 3px 6px;
+    background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.1); border-radius: 5px;
+    color: var(--text); font: inherit; font-size: 11.5px; cursor: pointer; text-align: left;
+  }
+  .nb-item canvas { width: 18px; height: 18px; flex-shrink: 0; }
+  .nb-item .nb-name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .nb-item .nb-dist { font-family: Consolas, monospace; color: var(--muted); }
   #side-panel { display: contents; }
   #waiting-banner.warn { border-color: rgba(255, 152, 0, 0.7); }
   #waiting-banner.warn h2 { color: #ffb74d; }
@@ -156,7 +176,7 @@
     #top-hud .status-grp { font-size: 14px; flex-wrap: wrap; }
     #top-hud .vitals { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; font-size: 12px; }
     #top-hud .vital-pill { text-align: center; padding: 4px 6px; }
-    #top-hud .v-sec, #top-hud .v-qst { grid-column: 1 / -1; }
+    #top-hud .v-sec, #top-hud .v-qst, #top-hud #v-threat { grid-column: 1 / -1; }
     #bottom-drawer { flex: 1; min-height: 0; overflow-y: auto; }
     #bottom-drawer.collapsed #filters-body { display: grid; }
     #bottom-drawer.collapsed #drawer-extra { display: block; }
@@ -190,6 +210,15 @@
       <span class="vital-pill v-tm" id="v-tm">🌡 --</span>
       <span class="vital-pill v-sec" id="v-pos">SETOR --</span>
       <span class="vital-pill v-qst" id="v-qst">📜 MISSÃO</span>
+      <span class="vital-pill lvl-bad" id="v-threat" style="display:none"></span>
+    </div>
+    <div id="prog-row">
+      <div class="xp-wrap" title="XP até o próximo perk">
+        <div class="xp-bar"><div id="xp-fill"></div></div>
+        <span id="xp-txt" class="mono">XP --</span>
+      </div>
+      <span class="vital-pill" id="v-karma" title="Carma">☯ --</span>
+      <span class="vital-pill" id="v-kills" title="Zumbis / bandidos abatidos">☠ --</span>
     </div>
   </div>
 
@@ -250,6 +279,10 @@
       </label>
     </div>
     <div id="drawer-extra">
+      <div id="nearby-box">
+        <div class="nb-head">PERTO DE VOCÊ <span class="cnt">(toque = waypoint)</span></div>
+        <div id="nearby"></div>
+      </div>
       <div class="flt-actions">
         <button type="button" class="mini-btn" id="btn-essential">Só essencial</button>
         <button type="button" class="mini-btn close" id="btn-legend">Legenda ▸</button>
@@ -459,6 +492,8 @@
       panelW = side ? Math.round(window.innerWidth - side.getBoundingClientRect().left) + 8 : 0;
       hudBottom = 8;
       drawerTop = window.innerHeight;
+      const fabD = document.getElementById('fab-col');
+      if (fabD) fabD.style.top = '';
       return;
     }
     panelW = 0;
@@ -466,6 +501,8 @@
     const drw = document.getElementById('bottom-drawer');
     if (hud) hudBottom = hud.getBoundingClientRect().bottom;
     drawerTop = drw ? drw.getBoundingClientRect().top : window.innerHeight;
+    const fab = document.getElementById('fab-col');
+    if (fab) fab.style.top = Math.round(hudBottom + 8) + 'px';
   }
 
   function markInteract() {
@@ -1662,6 +1699,119 @@
     el.classList.toggle('lvl-bad', v < 30);
   }
 
+  const elXpWrap = document.querySelector('.xp-wrap');
+  const elXpFill = document.getElementById('xp-fill');
+  const elXpTxt = document.getElementById('xp-txt');
+  const elKarma = document.getElementById('v-karma');
+  const elKills = document.getElementById('v-kills');
+  const elThreat = document.getElementById('v-threat');
+  const elNearby = document.getElementById('nearby');
+  let nearbyAt = 0;
+
+  // XP vai até perk_cost (custo do próximo perk); karma -11 = ainda não iniciado no jogo
+  function updateProgress(p) {
+    if (typeof p.xp === 'number') {
+      const goal = Math.max(1, p.xpGoal || 100);
+      const ready = p.xp >= goal;
+      elXpFill.style.width = Math.min(100, (p.xp / goal) * 100).toFixed(1) + '%';
+      elXpWrap.classList.toggle('ready', ready);
+      elXpTxt.textContent = ready
+        ? 'PERK DISPONÍVEL! ' + p.xp + '/' + goal + ' XP'
+        : 'XP ' + p.xp + '/' + goal + ' • faltam ' + (goal - p.xp) + (p.perks ? ' • perks ' + p.perks : '');
+    }
+    if (typeof p.karma === 'number' && !isNaN(p.karma)) {
+      const unset = p.karma === -11;
+      elKarma.textContent = '☯ ' + (unset ? '--' : (p.karma > 0 ? '+' + p.karma : p.karma));
+      elKarma.classList.toggle('karma-good', !unset && p.karma > 0);
+      elKarma.classList.toggle('karma-bad', !unset && p.karma < 0);
+    }
+    if (typeof p.zedKills === 'number') {
+      elKills.textContent = '☠ ' + p.zedKills + ' / ' + (p.banditKills || 0);
+    }
+  }
+
+  function updateThreatAlert(p) {
+    let best = null;
+    let bestD = Infinity;
+    const threats = (tickData && tickData.threats) || [];
+    for (let i = 0; i < threats.length; i++) {
+      const th = threats[i];
+      if (th.kind === 'ally') continue;
+      const d = Math.hypot(th.x - p.x, th.y - p.y);
+      if (d < bestD) { bestD = d; best = th; }
+    }
+    if (!best || bestD > 2600) {
+      elThreat.style.display = 'none';
+      return;
+    }
+    elThreat.textContent = '⚠ ' + (best.label || 'Ameaça') + ' ' + distBearingText(p.x, p.y, best.x, best.y);
+    elThreat.style.display = 'inline-block';
+  }
+
+  // Ponto mais próximo de cada categoria útil; toque marca waypoint
+  function updateNearby(p) {
+    const now = Date.now();
+    if (now - nearbyAt < 900 || !elNearby) return;
+    nearbyAt = now;
+    const cands = [];
+    const add = function (key, list, label) {
+      let best = null;
+      let bestD = Infinity;
+      for (let i = 0; i < list.length; i++) {
+        const o = list[i];
+        if (!o || typeof o.x !== 'number') continue;
+        const d = Math.hypot(o.x - p.x, o.y - p.y);
+        if (d < bestD) { bestD = d; best = o; }
+      }
+      if (best) cands.push({ key: key, x: best.x, y: best.y, d: bestD, name: label || best.label || ICON_STYLE[key].name });
+    };
+    const md = mapData || {};
+    const td = tickData || {};
+    const q = td.quest;
+    if (q) {
+      if (q.target) add('target', [q.target], 'Alvo: ' + (q.target.label || 'missão'));
+      add('qitem', q.items || [], 'Item da missão');
+      add('quest', q.givers || (q.giver ? [q.giver] : []), 'Sobrevivente (missão)');
+    }
+    add('secret', md.secrets || []);
+    add('bunker', md.bunkers || []);
+    add('heli', md.crashes || []);
+    add('vehicle', td.vehicles || []);
+    add('tent', td.tents || []);
+    add('med', landmarks.filter(function (l) { return l.kind === 'med'; }), 'Hospital');
+    add('mil', landmarks.filter(function (l) { return l.kind === 'mil'; }), 'Militar');
+    add('gas', landmarks.filter(function (l) { return l.kind === 'gas'; }), 'Posto');
+    cands.sort(function (a, b) { return a.d - b.d; });
+
+    elNearby.textContent = '';
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    cands.slice(0, 8).forEach(function (c) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'nb-item';
+      const cv = document.createElement('canvas');
+      cv.width = 18 * dpr;
+      cv.height = 18 * dpr;
+      const cx = cv.getContext('2d');
+      cx.scale(dpr, dpr);
+      drawIconShape(cx, c.key, 9, 9, 6);
+      const nm = document.createElement('span');
+      nm.className = 'nb-name';
+      nm.textContent = c.name;
+      const ds = document.createElement('span');
+      ds.className = 'nb-dist';
+      ds.textContent = distBearingText(p.x, p.y, c.x, c.y);
+      b.appendChild(cv);
+      b.appendChild(nm);
+      b.appendChild(ds);
+      b.addEventListener('click', function () {
+        placeWaypointAt(c.x, c.y);
+      });
+      elNearby.appendChild(b);
+    });
+    if (!cands.length) elNearby.textContent = 'Nada mapeado por perto ainda.';
+  }
+
   function setWait(title, msg, warn) {
     waitTitle.textContent = title;
     waitMsg.textContent = msg;
@@ -1702,6 +1852,9 @@
       vitalLevel(elFd, p.food);
       elTm.textContent = '🌡 ' + (p.temp > 0 ? '+' + p.temp : p.temp);
       elPos.textContent = 'SETOR ' + sectorLabel(p.x, p.y) + ' • ' + cardinal(bearingDeg(Math.cos(p.angle || 0), Math.sin(p.angle || 0)));
+      updateProgress(p);
+      updateThreatAlert(p);
+      updateNearby(p);
       if (elQst) {
         if (tickData.quest && tickData.quest.status >= 1 && tickData.quest.status <= 4) {
           elQst.textContent = '📜 ' + (tickData.quest.taskTitle || 'Missão Ativa');

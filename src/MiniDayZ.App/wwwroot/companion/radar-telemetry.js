@@ -1600,7 +1600,13 @@
                 temp: temp,
                 inBunker: Number(readGv(gvs, 'inBunker', 0)) === 1,
                 day: Number(readGv(gvs, 'Day_survived', 1)) || 1,
-                clock: padH + ':' + padM
+                clock: padH + ':' + padM,
+                xp: Math.round(Number(readGv(gvs, 'expierence_points', 0)) || 0),
+                xpGoal: Math.round(Number(readGv(gvs, 'perk_cost', 100)) || 100),
+                perks: Number(readGv(gvs, 'perks_learnt_count', 0)) || 0,
+                karma: Number(readGv(gvs, 'karma_points', -11)),
+                zedKills: Number(readGv(gvs, 'Stats_Zeds_killed', 0)) || 0,
+                banditKills: Number(readGv(gvs, 'Stats_Bandits_killed', 0)) || 0
             },
             quest_npc: qData.questNpc,
             quest_target: qData.questTarget,
