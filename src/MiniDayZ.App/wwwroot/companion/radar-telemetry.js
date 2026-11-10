@@ -372,14 +372,15 @@
         var t518 = types['t518'];
         var arr518 = (t518 && t518.q && t518.q.length) ? t518.q[0] : null;
 
-        var cols = getC2ArrayWidth(arr518) || 16;
-        var rows = getC2ArrayHeight(arr518) || 16;
+        // t518 é [linha][coluna] no jogo (minimapa compara t518 em (cc[2], cc[1])); matrix aqui é [coluna][linha]
+        var cols = getC2ArrayHeight(arr518) || 16;
+        var rows = getC2ArrayWidth(arr518) || 16;
         var matrix = [];
 
         for (var x = 0; x < cols; x++) {
             var col = [];
             for (var y = 0; y < rows; y++) {
-                col.push(arr518 ? Math.round(readC2ArrayCell(arr518, x, y, 0)) : 0);
+                col.push(arr518 ? Math.round(readC2ArrayCell(arr518, y, x, 0)) : 0);
             }
             matrix.push(col);
         }
@@ -395,8 +396,8 @@
                 var mg = t514.q[i];
                 if (!mg || !mg.cc) continue;
                 var code = Math.round(Number(mg.cc[0]) || 0);
-                var gy = Math.round(Number(mg.cc[1]) || 0);
-                var gx = Math.round(Number(mg.cc[2]) || 0);
+                var gx = Math.round(Number(mg.cc[1]) || 0);
+                var gy = Math.round(Number(mg.cc[2]) || 0);
                 if (gx >= 0 && gx < cols && gy >= 0 && gy < rows && code > 0) {
                     if (matrix[gx][gy] === 0 || code === 70 || code === 2 || ROAD_SECTOR_CODES[code]) {
                         matrix[gx][gy] = code;
