@@ -15,6 +15,7 @@ Documento de acompanhamento da evolução técnica do port de MiniDayZ para PC (
 | **v0.4.0** | 31/10/2026 | **Módulo Isolado de Controles + Coleta e Troca de Arma:** Isolamento completo em `Controls/PcControlsManager.cs` e `wwwroot/controls/pc-controls.js`, adição de Coletar Itens (`F` → `t512`), Trocar Arma Branca/Fogo (`Q` → `t509`), Recarregar (`R` → `t522`) e Aba Visual `Controles [F1]` com indicadores de posição no HUD. | Concluído ✅ |
 | **v0.4.1** | 01/11/2026 | **Sincronização Dinâmica de HUD e Resolução:** Injeção de `ResizeObserver` em `wwwroot/index.html` acionando `cr_sizeCanvas` e `window.dispatchEvent(new Event('resize'))` em tempo real ao redimensionar a janela WPF. | Concluído ✅ |
 | **v0.5.0** | 01/11/2026 | **Radar Tático & Companion Mobile LAN (Prioridade 09):** Extrator 1Hz no scene graph do Construct 2 (`radar-telemetry.js`), servidor LAN assíncrono em C# (`CompanionServer.cs`) via SSE, SPA Mobile-First em Canvas (`mobile-radar.html`), Waypoint bidirecional na borda da tela do PC e QR Code nativo na aba `Controles [F1]`. | Concluído ✅ |
+| **pós-v0.5.0** | 09/11/2026 | **Endurecimento (auditoria `Melhorias.md`, fases 1–3):** saves reais em disco via `localforage`, fila/backup de saves, log em arquivo, Companion opt-in com token, guardas do WebView2, instância única, QR até v10, telemetria sob demanda e waypoint a 12 Hz. | Concluído ✅ |
 
 ---
 
@@ -34,9 +35,10 @@ MINI_DAYA_Z/
 │       └── host_virtual_menu.png          # Menu inicial carregado com sucesso
 └── src/MiniDayZ.App/
     ├── MiniDayZ.App.csproj     # Configuração do build .NET 8, GC econômico e cópia de assets
-    ├── App.xaml / App.xaml.cs  # Ponto de entrada WPF
+    ├── App.xaml / App.xaml.cs  # Ponto de entrada WPF (instância única + handlers globais)
+    ├── Logger.cs               # Log em arquivo com rotação
     ├── AssemblyInfo.cs         # Metadados e ThemeInfo
-    ├── SaveSystem.cs           # Persistência atômica (.json em %LOCALAPPDATA%\MiniDayZ\Saves)
+    ├── SaveSystem.cs           # Fila async, escrita atômica, .bak, nome = sha256 da chave
     ├── Companion/
     │   └── CompanionServer.cs  # Servidor LAN ultraleve (HTTP/1.1 + SSE + Waypoint reverso)
     ├── Controls/
@@ -225,6 +227,26 @@ Na versão **v0.5.0** (Prioridade 09), foi implementado o sistema de segundo ecr
 
 ---
 
+## 🛡️ Marco 5: Endurecimento — Saves, Rede e Jogo (pós-v0.5.0)
+
+Resultado das fases 1–3 do prompt da seção 12 de `Melhorias.md`:
+
+**Fase 1 — Saves e robustez**
+- O jogo salvava via `localforage` (IndexedDB), contornando o `SaveSystem`. Agora os métodos públicos do `window.localforage` são sobrescritos (`index.html`, logo após `c2runtime.js`) e gravam via IPC com chaves `lf:`. Migração única do IndexedDB antigo no 1º boot sem saves em disco (sem apagá-lo).
+- `SaveSystem`: fila em background com coalesce/debounce 300 ms, `Flush` no fechamento, backup `.bak`, limpeza de `.tmp`, nome do arquivo = sha256 da chave (`{key,data}` no JSON) com migração do formato antigo.
+- Fechamento: timeout de 3 s, flag `_isClosing`, try/catch por chave. `InitializeAsync` com tratamento geral; `App` com handlers globais; `Logger` em `%LOCALAPPDATA%\MiniDayZ\logs\app.log`.
+
+**Fase 2 — Rede**
+- Companion desligado por padrão (toggle na F1), token de 128 bits, bind só LAN+loopback, filtro de IP privado, validação de `Host`, sem CORS, limites de conexão/SSE, fila `Channel` por cliente SSE, validação do `POST /waypoint`, `Dispose` ordenado.
+- Patches do radar embutidos em `mobile-radar.html`; `GetPatchedRadarHtml` removido.
+- WebView2: navegação restrita ao host virtual, popups só para whitelist, rede externa bloqueada (exceto `account.bistudio.com`). Instância única por Mutex.
+
+**Fase 3 — Jogo**
+- Atalhos só clicam em alvo "live"; teclas do jogo (`W A S D`, `Enter`) nunca engolidas; keyup simétrico; cliques serializados.
+- `readC2ArrayCellRaw` no `t540`; QR até a versão 10 (L, multi-bloco) com fallback para só-link; telemetria só com cliente SSE conectado; waypoint a 12 Hz com cache e `transform`.
+
+---
+
 ## 🚀 Como Executar o Projeto
 
 ```powershell
@@ -238,7 +260,7 @@ dotnet run --project src/MiniDayZ.App
 No Visual Studio:
 1. Abra `MiniDayZ.App.sln`.
 2. Pressione **F5** (Debug) ou **Ctrl+F5** (Release).
-3. Na janela **Output** (Depurar), visualize os logs do IPC (`[MiniDayZ IPC] TestIPC_Success`, saves efetuados e logs de console do motor web).
+3. Na janela **Output** (Depurar), visualize os logs; em qualquer modo eles também vão para `%LOCALAPPDATA%\MiniDayZ\logs\app.log`.
 
 ---
 

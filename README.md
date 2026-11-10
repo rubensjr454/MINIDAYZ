@@ -14,9 +14,12 @@ MINI_DAYA_Z/
 ├── docs/screenshots/           # Capturas de tela de validação e diagnóstico
 └── src/MiniDayZ.App/
     ├── MiniDayZ.App.csproj     # Configuração do compilador, GC enxuto e deploy de assets
-    ├── App.xaml / App.xaml.cs  # Ponto de entrada da aplicação WPF
+    ├── App.xaml / App.xaml.cs  # Ponto de entrada WPF: instância única (Mutex) e handlers globais de exceção
+    ├── Logger.cs               # Log em arquivo (%LOCALAPPDATA%\MiniDayZ\logs\app.log, rotação 1 MB x 3)
     ├── AssemblyInfo.cs         # Definições de tema e metadados do assembly
-    ├── SaveSystem.cs           # Gerenciador nativo de persistência em disco (%LOCALAPPDATA%)
+    ├── SaveSystem.cs           # Persistência em disco (%LOCALAPPDATA%): fila em background, backup .bak, sha256
+    ├── Companion/CompanionServer.cs # Radar LAN opt-in (token, bind LAN+loopback, limites)
+    ├── Controls/PcControlsManager.cs # Cliques nativos via CDP (serializados)
     ├── MainWindow.xaml         # Layout da janela principal (Grid zerado + WebView2)
     ├── MainWindow.xaml.cs      # Inicialização do Chromium, ponte IPC e Save on Close
     └── wwwroot/                # Motor HTML5 Construct 2 + injeções de código PC
@@ -105,7 +108,9 @@ Camada de persistência nativa no sistema de arquivos do Windows:
 
 Ponto de entrada HTML5 com três injeções customizadas para transformar o jogo web em jogo de PC:
 
-1. **Monkey Patch de `localStorage` (no topo do `<head>`):**
+0. **Interceptação do `localforage` (script logo após `c2runtime.js`):** o jogo salva via `localforage` (IndexedDB), não `localStorage`. Como a API de drivers está minificada no `c2runtime`, os métodos públicos (`getItem`, `setItem`, `removeItem`, `clear`, `keys`, `length`, `key`, `iterate`) são sobrescritos com `Object.defineProperty` e passam a usar o cache `window.__MDZ_LF__` + IPC (`save`/`delete` com chave `lf:<nome>`). No 1º boot sem saves em disco (`window.__MDZ_FIRST_BOOT__`), o IndexedDB antigo é lido e migrado para o C# (sem ser apagado).
+
+1. **Monkey Patch de `localStorage` (no topo do `<head>`, mantido como fallback dos `__c2save_*`):**
    - Intercepta `Storage.prototype.setItem`, `getItem`, `removeItem` e `clear` antes do motor Construct 2 carregar.
    - Usa o cache `window.__MDZ_SAVES__` injetado pelo C# para responder chamadas síncronas de `getItem` em tempo zero e restaura saves automaticamente se o cache do navegador for limpo.
    - Toda chamada a `setItem` ou `removeItem` dispara mensagens IPC assíncronas (`save` / `delete`) para o C#.
@@ -115,11 +120,7 @@ Ponto de entrada HTML5 com três injeções customizadas para transformar o jogo
    - **CSS:** `overflow: hidden; user-select: none; -webkit-user-drag: none; touch-action: none;` e `img { pointer-events: none; }` — impede barras de rolagem, seleção acidental de texto e arrasto de imagens.
    - **JS:** Bloqueia o evento `contextmenu` (clique direito não abre menu de navegador) e envia `"TestIPC_Success"` no `load` para confirmar que a ponte IPC está ativa.
 
-3. **Mapeamento de Teclado para PC (`<script id="pc-keybinds">` antes de `</body>`):**
-   - **`simulateCanvasClick(xPercent, yPercent)`:** Localiza o `#c2canvas`, calcula a posição exata em pixels com base na porcentagem da largura/altura atual da janela (`getBoundingClientRect()`) e dispara eventos sintéticos de mouse (`mousedown` → `mouseup` → `click`) e toque (`touchstart` → `touchend`).
-   - **Listener `keydown` (ignora repetição automática `e.repeat`):**
-     - **Tecla `E`:** Dispara `simulateCanvasClick(0.90, 0.85)` — aciona o botão de ação principal no canto inferior direito.
-     - **Teclas `1` a `5`:** Disparam cliques nas coordenadas `(0.30, 0.90)` até `(0.70, 0.90)` — acionam diretamente os 5 slots da hotbar na parte inferior da tela.
+3. **Controles PC:** a lógica de teclado fica isolada em `wwwroot/controls/pc-controls.js` (ver [CONTROLES.md](CONTROLES.md)). O Radar Tático LAN está descrito em [COMPANION.md](COMPANION.md).
 
 ---
 

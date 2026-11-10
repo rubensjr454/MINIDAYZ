@@ -8,7 +8,7 @@ Documentação técnica do módulo **Companion LAN (Prioridade 09)**, responsáv
 
 ```
 [Construct 2 Runtime (cr_getC2Runtime)]
-        │  Polling leve 1Hz (1000ms) — ativo apenas em partida (Map / Tutorial / Polygon)
+        │  Polling leve 1Hz (1000ms) — ativo apenas em partida E com ao menos um celular conectado (SSE)
         ▼
 [wwwroot/companion/radar-telemetry.js]
         ├── companion_map_init (1x ao carregar ilha: terreno RLE, matriz 16x16, prédios, Secret Locations, Heli Crashes, Bunkers)
@@ -26,8 +26,23 @@ Documentação técnica do módulo **Companion LAN (Prioridade 09)**, responsáv
 ### Decisões de Performance
 1. **Zero Overhead em Menus:** O extrator verifica `rt.wa.name` e `level_loading`; fora de partida ativa, nenhuma mensagem IPC é gerada.
 2. **Separação Estático vs. Móvel:** O layout procedural (`17850x20000`), malha de terreno (codificada em RLE `< 3 KB`), matriz `16x16` e estruturas fixas são enviados **uma única vez** (`companion_map_init`). O celular pré-renderiza tudo num `<canvas>` *offscreen* local.
-3. **Servidor Socket Nativo sem UAC:** Usa `TcpListener` assíncrono do `.NET 8` em `0.0.0.0:8080` (com fallback `8081..8089` e fallback `127.0.0.1`), evitando o erro `Access Denied (URLACL)` do `HttpListener` em contas Windows sem privilégio de Administrador.
-4. **QR Code Nativo Zero-Lib:** A aba `Controles [F1]` ([pc-controls.js](file:///c:/Users/Junimonbr/Documents/MINI_DAYA_Z/src/MiniDayZ.App/wwwroot/controls/pc-controls.js)) gera o QR Code ISO/IEC 18004 (Byte Mode, Reed-Solomon `GF(256)`) diretamente em `<canvas>` puro.
+3. **Servidor Socket Nativo sem UAC, opt-in:** `TcpListener` assíncrono do `.NET 8` (portas `8080..8089`), **desligado por padrão** — só sobe pelo toggle na aba F1 (`companion_start`/`companion_stop`). Escuta apenas no IP da LAN detectado + `127.0.0.1` (nunca `0.0.0.0`) e só aceita clientes de IP privado (10/8, 172.16/12, 192.168/16, 127/8). Evita o `Access Denied (URLACL)` do `HttpListener`.
+4. **QR Code Nativo Zero-Lib:** a aba `Controles [F1]` ([pc-controls.js](src/MiniDayZ.App/wwwroot/controls/pc-controls.js)) gera o QR ISO/IEC 18004 (Byte Mode, ECC L, versões 1–10 com Reed-Solomon multi-bloco) em `<canvas>`. Se a URL não couber, o QR é ocultado e só o link é exibido.
+5. **Telemetria sob demanda:** o C# envia `CompanionClients(n)` quando o número de clientes SSE muda; com `n = 0` o `pollTelemetry` não coleta, e em `0→1` o mapa é reenviado (`forceMapResend`).
+
+---
+
+## 1.1 Segurança do Servidor
+
+| Item | Comportamento |
+|---|---|
+| **Token por sessão** | 128 bits aleatórios (`RandomNumberGenerator`) gerados a cada `Start`. A URL do QR é `http://<ip>:<porta>/?t=<token>`. Toda rota exige `?t=` ou header `X-MDZ-Token` (comparação `FixedTimeEquals`); senão `401`. O `mobile-radar.html` lê o token da URL e o envia em `/state`, `/events`, `/waypoint` e `/images/*`. |
+| **Host / CORS** | Header `Host` precisa ser `<ip>:<porta>`, `127.0.0.1:<porta>` ou `localhost:<porta>`. Não há `Access-Control-*` nem rota `OPTIONS`. |
+| **Limites** | Máx. 32 conexões simultâneas, 4 clientes SSE, timeout de escrita 5 s. |
+| **SSE** | Cada cliente tem um `Channel<byte[]>` limitado (64) e um único loop de escrita; fila cheia desconecta o cliente (sem frames fora de ordem). |
+| **POST /waypoint** | JSON inválido ou não-objeto → `400`; `x`/`y` precisam ser finitos e dentro dos limites do mapa. |
+| **Encerramento** | `Dispose`/`Stop` cancelam e aguardam as tasks de accept/keepalive por até 1 s. |
+| **HTML do radar** | Os patches antigos foram incorporados ao `mobile-radar.html`; o servidor entrega os bytes carregados uma única vez. |
 
 ---
 
@@ -60,7 +75,7 @@ Inspeção realizada sobre `cr_getC2Runtime()` (`c2runtime.js` + `data.js` do Mi
 
 ## 3. Como Usar
 
-1. No jogo no PC, pressione **`F1`** (ou clique em **`Controles [F1]`** no topo).
-2. Aponte a câmera do telemóvel (conectado ao mesmo Wi-Fi) para o **QR Code** exibido na secção **Radar Tático Mobile (LAN)**, ou abra o link `http://<IP-LAN>:8080` num segundo monitor.
+1. No jogo no PC, pressione **`F1`** (ou clique em **`Controles [F1]`**) e marque **"Ativar Radar Mobile"** (o servidor fica desligado até isso).
+2. Aponte a câmera do telemóvel (conectado ao mesmo Wi-Fi) para o **QR Code** exibido na secção **Radar Tático Mobile (LAN)**, ou abra o link exibido (`http://<IP-LAN>:8080/?t=<token>`) num segundo monitor.
 3. Use dois dedos para *pinch-to-zoom*, arraste para inspecionar a ilha, alterne os 4 filtros táticos e toque em qualquer ponto do mapa para projetar um **Waypoint** direcional com distância em metros na borda da tela do PC.
 

@@ -21,9 +21,17 @@ Toda a camada de controles de teclado e visualização de atalhos do port PC est
 
 ---
 
+## Regras de Segurança dos Atalhos
+
+- **Só clica em alvo "live":** `native_click` é enviado apenas quando o botão/slot foi localizado de fato no scene graph (`pt.live`). Sem alvo real (ex.: em menus), a tecla não clica; as coordenadas de fallback servem só para desenhar os pinos da F1 e a tecla segue para o jogo.
+- **Teclas do jogo nunca são engolidas:** o plugin Keyboard do jogo usa `W A S D` (`IsKeyDown`), `Enter` (`OnKey`) e um `OnAnyKey`. Esses códigos (87, 65, 83, 68, 13) são ignorados pelo listener de captura.
+- **keydown/keyup simétricos:** se um `keydown` foi engolido, o `keyup` correspondente também é.
+- **Cliques serializados:** `PcControlsManager` usa `SemaphoreSlim(1)`, evitando toques simultâneos com o mesmo `id`.
+
 ## Aba Visual de Controles (`Controles [F1]`)
 
 No topo da tela há um botão discreto **`Controles [F1]`** (também acionável pela tecla `F1`):
 1. Ao abrir a aba, todos os atalhos são listados em um painel isolado e pinos visuais (`[E / TAB]`, `[F]`, `[Q]`, `[R]`, `[1]`–`[5]`) aparecem exatamente sobre a coordenada real onde cada botão atua na tela.
 2. A opção **"Fixar indicadores de tecla no HUD"** permite manter os indicadores `[E]`, `[F]`, `[Q]`, `[R]` visíveis sobre os botões mesmo após fechar a aba.
+3. A aba contém o toggle **"Ativar Radar Mobile"**: só ao marcá-lo o servidor LAN sobe e o QR Code/link (com token) aparecem. Veja [COMPANION.md](COMPANION.md).
 
