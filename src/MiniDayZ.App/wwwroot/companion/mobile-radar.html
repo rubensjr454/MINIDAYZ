@@ -197,15 +197,15 @@
       </label>
       <label class="flt-item">
         <input type="checkbox" id="flt-waypoint" checked />
-        <span class="badge-wp">📍 Marcar Waypoint no PC ao tocar no mapa</span>
+        <span class="badge-wp">📍 Waypoint no PC: segurar ou duplo toque no mapa</span>
       </label>
     </div>
   </div>
 
 <script>
 (function () {
-  var TOKEN = new URLSearchParams(window.location.search).get('t') || '';
   'use strict';
+  var TOKEN = new URLSearchParams(window.location.search).get('t') || '';
 
   var PX_PER_METER = 22;
   var LABEL_ZOOM_THRESHOLD = 0.095; // Oculta rótulos fixos em zoom distante para nunca tampar ruas/prédios
@@ -344,9 +344,10 @@
   }
 
   function sectorLabel(wx, wy) {
-    var g = getGridSpec();
-    var cx = Math.max(0, Math.min(g.cols - 1, Math.floor((wx - g.originX) / g.cellW)));
-    var cy = Math.max(0, Math.min(g.rows - 1, Math.floor((wy - g.originY) / g.cellH)));
+    const g = getGridSpec();
+    const cx = Math.floor((wx - g.originX) / g.cellW);
+    const cy = Math.floor((wy - g.originY) / g.cellH);
+    if (cx < 0 || cy < 0 || cx >= g.cols || cy >= g.rows) return '--';
     return colLetters(cx) + (cy + 1);
   }
 
@@ -389,30 +390,32 @@
 
       pending++;
       (function (fileName) {
-        var rec = { status: 'loading', img: null };
+        var rec = { status: 'loading', img: null, tries: 0 };
         imgCache[fileName] = rec;
-        var im = new Image();
-        im.decoding = 'async';
-        im.onload = function () {
-          rec.status = 'ok';
-          rec.img = im;
-          updateTextureBadge();
-          scheduleRebake();
-        };
-        im.onerror = function () {
-          rec.status = 'err';
-          updateTextureBadge();
-        };
-        im.src = '/images/' + encodeURIComponent(fileName) + '?t=' + encodeURIComponent(TOKEN);
+        function load() {
+          var im = new Image();
+          im.decoding = 'async';
+          im.onload = function () {
+            rec.status = 'ok';
+            rec.img = im;
+            updateTextureBadge();
+            scheduleRebake();
+          };
+          im.onerror = function () {
+            if (rec.tries++ < 1) {
+              window.setTimeout(load, 1500);
+              return;
+            }
+            rec.status = 'err';
+            updateTextureBadge();
+          };
+          im.src = '/images/' + encodeURIComponent(fileName) + '?t=' + encodeURIComponent(TOKEN) + (rec.tries ? '&r=' + rec.tries : '');
+        }
+        load();
       })(fn);
     }
 
     updateTextureBadge();
-    if (pending === 0 && loaded > 0) {
-      // Já estavam todas em cache
-      texStatus.style.display = 'inline-block';
-      texStatus.textContent = 'SATÉLITE HD';
-    }
   }
 
   function updateTextureBadge() {
@@ -428,11 +431,8 @@
       else if (st.status === 'ok') ok++;
     }
     texStatus.style.display = 'inline-block';
-    if (loading > 0) {
-      texStatus.textContent = 'TEXTURAS ' + ok + '/' + mapData.images.length;
-    } else {
-      texStatus.textContent = 'SATÉLITE HD';
-    }
+    var total = mapData.images.length;
+    texStatus.textContent = ok === total ? 'SATÉLITE HD' : ('TEXTURAS ' + ok + '/' + total + (loading ? '' : ' ⚠'));
   }
 
   function getLoadedImgByIdx(imgIdx) {
@@ -621,7 +621,12 @@
     } else {
       staticCtx.fillStyle = isWinter ? '#cfd6d8' : '#62654c';
     }
-    staticCtx.fillRect(0, 0, mw, mh);
+    const land = getGridSpec();
+    const landX0 = Math.max(0, land.originX);
+    const landY0 = Math.max(0, land.originY);
+    const landX1 = Math.min(mw, land.originX + land.cols * land.cellW);
+    const landY1 = Math.min(mh, land.originY + land.rows * land.cellH);
+    staticCtx.fillRect(landX0, landY0, landX1 - landX0, landY1 - landY0);
 
     // 3. Terreno global RLE + Malha Viária Procedural 16x16 (renderiza 100% da ilha logo no boot!)
     var ter = mapData.terrain;
@@ -658,6 +663,33 @@
       }
     }
 
+    // 4. Tiled Backgrounds reais (Água costeira t976, Pontes asfaltadas t974, Heliponto t1002)
+    var tbgs = mapData.tiledBgs || [];
+    for (var tbi = 0; tbi < tbgs.length; tbi++) {
+      var tb = tbgs[tbi];
+      var tbImg = getLoadedImgByIdx(tb[0]);
+      var tx = tb[1];
+      var ty = tb[2];
+      var twBg = tb[3];
+      var thBg = tb[4];
+      var tAng = tb[5] || 0;
+      var tOx = typeof tb[6] === 'number' ? tb[6] : 0;
+      var tOy = typeof tb[7] === 'number' ? tb[7] : 0;
+
+      staticCtx.save();
+      staticCtx.translate(tx, ty);
+      if (tAng) staticCtx.rotate(tAng);
+      staticCtx.translate(-tOx * twBg, -tOy * thBg);
+      if (tbImg) {
+        var tbPat = staticCtx.createPattern(tbImg, 'repeat');
+        staticCtx.fillStyle = tbPat || '#5c5850';
+      } else {
+        staticCtx.fillStyle = '#294344';
+      }
+      staticCtx.fillRect(0, 0, twBg, thBg);
+      staticCtx.restore();
+    }
+
     // 3b. Estradas Globais da Matriz Procedural (t518 + t514 + t703) cobrindo 100% da ilha antes do streaming
     var blk = mapData.blocks;
     if (blk && blk.roads && blk.roads.length) {
@@ -686,33 +718,6 @@
         staticCtx.lineTo(sg1[2], sg1[3]);
       }
       staticCtx.stroke();
-      staticCtx.restore();
-    }
-
-    // 4. Tiled Backgrounds reais (Água costeira t976, Pontes asfaltadas t974, Heliponto t1002)
-    var tbgs = mapData.tiledBgs || [];
-    for (var tbi = 0; tbi < tbgs.length; tbi++) {
-      var tb = tbgs[tbi];
-      var tbImg = getLoadedImgByIdx(tb[0]);
-      var tx = tb[1];
-      var ty = tb[2];
-      var twBg = tb[3];
-      var thBg = tb[4];
-      var tAng = tb[5] || 0;
-      var tOx = typeof tb[6] === 'number' ? tb[6] : 0;
-      var tOy = typeof tb[7] === 'number' ? tb[7] : 0;
-
-      staticCtx.save();
-      staticCtx.translate(tx, ty);
-      if (tAng) staticCtx.rotate(tAng);
-      staticCtx.translate(-tOx * twBg, -tOy * thBg);
-      if (tbImg) {
-        var tbPat = staticCtx.createPattern(tbImg, 'repeat');
-        staticCtx.fillStyle = tbPat || '#5c5850';
-      } else {
-        staticCtx.fillStyle = '#294344';
-      }
-      staticCtx.fillRect(0, 0, twBg, thBg);
       staticCtx.restore();
     }
 
@@ -1105,8 +1110,8 @@
   }
 
   function renderFrame() {
-    var vw = window.innerWidth;
-    var vh = window.innerHeight;
+    let vw = window.innerWidth;
+    let vh = window.innerHeight;
 
     ctx.fillStyle = '#182b30';
     ctx.fillRect(0, 0, vw, vh);
@@ -1118,23 +1123,23 @@
 
     // 1. Blit único da Visão de Satélite em cache (0% overhead de CPU!)
     if (mapData && staticLayer.width > 0) {
-      var tl = worldToScreen(0, 0);
-      var dw = mapData.width * cam.zoom;
-      var dh = mapData.height * cam.zoom;
+      let tl = worldToScreen(0, 0);
+      let dw = mapData.width * cam.zoom;
+      let dh = mapData.height * cam.zoom;
       ctx.imageSmoothingEnabled = cam.zoom < 0.45;
       ctx.drawImage(staticLayer, tl.x, tl.y, dw, dh);
     }
 
-    var pulse = 0.5 + 0.5 * Math.sin(Date.now() * 0.005);
-    var labelQueue = [];
+    let pulse = 0.5 + 0.5 * Math.sin(Date.now() * 0.005);
+    let labelQueue = [];
     interactiveTargets = [];
 
     function registerInteractive(wx, wy, sx, sy, label, color, badge, prio) {
       if (sx < -30 || sy < -30 || sx > vw + 30 || sy > vh + 30) return;
-      var item = { x: wx, y: wy, sx: sx, sy: sy, label: label, color: color, badge: badge, prio: prio };
+      let item = { x: wx, y: wy, sx: sx, sy: sy, label: label, color: color, badge: badge, prio: prio };
       interactiveTargets.push(item);
 
-      var isFocused = isSameTarget(item, selectedPoi) || isSameTarget(item, hoveredPoi);
+      let isFocused = isSameTarget(item, selectedPoi) || isSameTarget(item, hoveredPoi);
       if (isFocused) {
         // Anel de inspeção no ícone selecionado/focado
         ctx.beginPath();
@@ -1143,7 +1148,7 @@
         ctx.lineWidth = 2;
         ctx.stroke();
 
-        var dTxt = '';
+        let dTxt = '';
         if (tickData && tickData.player) {
           dTxt = ' • ' + Math.round(Math.hypot(wx - tickData.player.x, wy - tickData.player.y) / PX_PER_METER) + 'm';
         }
@@ -1169,13 +1174,13 @@
 
     // 2. Pontos de Referência Geográficos (Igrejas, Hospitais, Bases Militares, Postos...)
     if (filters.landmarks && landmarks.length) {
-      for (var li = 0; li < landmarks.length; li++) {
-        var lm = landmarks[li];
-        var ls = worldToScreen(lm.x, lm.y);
+      for (let li = 0; li < landmarks.length; li++) {
+        let lm = landmarks[li];
+        let ls = worldToScreen(lm.x, lm.y);
         if (ls.x < -24 || ls.y < -24 || ls.x > vw + 24 || ls.y > vh + 24) continue;
 
         if (cam.zoom >= LANDMARK_BADGE_ZOOM || lm.prio <= 3) {
-          var rad = cam.zoom >= 0.08 ? 8.5 : 6.8;
+          let rad = cam.zoom >= 0.08 ? 8.5 : 6.8;
           ctx.beginPath();
           ctx.arc(ls.x, ls.y, rad, 0, Math.PI * 2);
           ctx.fillStyle = 'rgba(12, 16, 14, 0.86)';
@@ -1197,10 +1202,10 @@
 
     // 3. Heli Crashes Reais, Veículos Dirigíveis e Tendas
     if (filters.crashes) {
-      var crashes = (mapData && mapData.crashes) || [];
-      for (var ci = 0; ci < crashes.length; ci++) {
-        var cr = crashes[ci];
-        var cs = worldToScreen(cr.x, cr.y);
+      let crashes = (mapData && mapData.crashes) || [];
+      for (let ci = 0; ci < crashes.length; ci++) {
+        let cr = crashes[ci];
+        let cs = worldToScreen(cr.x, cr.y);
         ctx.beginPath();
         ctx.arc(cs.x, cs.y, 8 + pulse * 3, 0, Math.PI * 2);
         ctx.strokeStyle = 'rgba(255, 112, 67, 0.6)';
@@ -1221,10 +1226,10 @@
         registerInteractive(cr.x, cr.y, cs.x, cs.y, cr.label, '#ffab91', '🚁', 2);
       }
 
-      var tents = (tickData && tickData.tents) || [];
-      for (var ti = 0; ti < tents.length; ti++) {
-        var tn = tents[ti];
-        var ts = worldToScreen(tn.x, tn.y);
+      let tents = (tickData && tickData.tents) || [];
+      for (let ti = 0; ti < tents.length; ti++) {
+        let tn = tents[ti];
+        let ts = worldToScreen(tn.x, tn.y);
         ctx.fillStyle = '#9ccc65';
         ctx.strokeStyle = '#142209';
         ctx.lineWidth = 1.4;
@@ -1239,10 +1244,10 @@
         registerInteractive(tn.x, tn.y, ts.x, ts.y, tn.label, '#c5e1a5', '⛺', 3);
       }
 
-      var vehicles = (tickData && tickData.vehicles) || [];
-      for (var vi = 0; vi < vehicles.length; vi++) {
-        var vhObj = vehicles[vi];
-        var vs2 = worldToScreen(vhObj.x, vhObj.y);
+      let vehicles = (tickData && tickData.vehicles) || [];
+      for (let vi = 0; vi < vehicles.length; vi++) {
+        let vhObj = vehicles[vi];
+        let vs2 = worldToScreen(vhObj.x, vhObj.y);
         ctx.fillStyle = '#29b6f6';
         ctx.strokeStyle = '#071924';
         ctx.lineWidth = 2;
@@ -1255,48 +1260,48 @@
 
     // 4. Local Secreto Verdadeiro (1 por Ilha) & Bunkers / Extração (DESTAQUE DOURADO LIMPO)
     if (filters.secrets && mapData) {
-      var goldList = (mapData.secrets || []).concat(mapData.bunkers || []);
-      for (var gi = 0; gi < goldList.length; gi++) {
-        var g = goldList[gi];
-        var gs = worldToScreen(g.x, g.y);
+      let goldList = (mapData.secrets || []).concat(mapData.bunkers || []);
+      for (let gi = 0; gi < goldList.length; gi++) {
+        let gold = goldList[gi];
+        let goldS = worldToScreen(gold.x, gold.y);
 
         ctx.beginPath();
-        ctx.arc(gs.x, gs.y, 11 + pulse * 4.5, 0, Math.PI * 2);
+        ctx.arc(goldS.x, goldS.y, 11 + pulse * 4.5, 0, Math.PI * 2);
         ctx.fillStyle = 'rgba(255, 213, 79, 0.22)';
         ctx.fill();
         ctx.strokeStyle = '#ffd54f';
         ctx.lineWidth = 1.8;
         ctx.stroke();
 
-        if (g.kind === 'secret') {
-          drawStar(gs.x, gs.y, 5, 8.8, 4.2);
+        if (gold.kind === 'secret') {
+          drawStar(goldS.x, goldS.y, 5, 8.8, 4.2);
           ctx.fillStyle = '#ffd54f';
           ctx.fill();
           ctx.strokeStyle = '#2b2000';
           ctx.lineWidth = 1.3;
           ctx.stroke();
-          registerInteractive(g.x, g.y, gs.x, gs.y, g.label, '#ffd54f', '★', 1);
+          registerInteractive(gold.x, gold.y, goldS.x, goldS.y, gold.label, '#ffd54f', '★', 1);
         } else {
           ctx.beginPath();
-          ctx.moveTo(gs.x, gs.y - 8);
-          ctx.lineTo(gs.x + 8, gs.y);
-          ctx.lineTo(gs.x, gs.y + 8);
-          ctx.lineTo(gs.x - 8, gs.y);
+          ctx.moveTo(goldS.x, goldS.y - 8);
+          ctx.lineTo(goldS.x + 8, goldS.y);
+          ctx.lineTo(goldS.x, goldS.y + 8);
+          ctx.lineTo(goldS.x - 8, goldS.y);
           ctx.closePath();
           ctx.fillStyle = '#ffd54f';
           ctx.fill();
           ctx.strokeStyle = '#2b2000';
           ctx.lineWidth = 1.5;
           ctx.stroke();
-          registerInteractive(g.x, g.y, gs.x, gs.y, g.label, '#ffe082', '◆', 1);
+          registerInteractive(gold.x, gold.y, goldS.x, goldS.y, gold.label, '#ffe082', '◆', 1);
         }
       }
     }
 
     // 5. Radar de Ameaças Próximas
     if (filters.threats && tickData && tickData.player) {
-      var ps0 = worldToScreen(tickData.player.x, tickData.player.y);
-      var radScreen = 2600 * cam.zoom;
+      let ps0 = worldToScreen(tickData.player.x, tickData.player.y);
+      let radScreen = 2600 * cam.zoom;
       ctx.beginPath();
       ctx.arc(ps0.x, ps0.y, radScreen, 0, Math.PI * 2);
       ctx.strokeStyle = 'rgba(174, 213, 129, 0.30)';
@@ -1305,10 +1310,10 @@
       ctx.stroke();
       ctx.setLineDash([]);
 
-      var threats = tickData.threats || [];
-      for (var ei = 0; ei < threats.length; ei++) {
-        var th = threats[ei];
-        var es = worldToScreen(th.x, th.y);
+      let threats = tickData.threats || [];
+      for (let ei = 0; ei < threats.length; ei++) {
+        let th = threats[ei];
+        let es = worldToScreen(th.x, th.y);
 
         if (th.kind === 'hulk') {
           ctx.beginPath();
@@ -1353,30 +1358,30 @@
 
     // 5.5. Missões & Sobreviventes Neutros (NPC Quest Giver & Itens Solicitados)
     if (filters.quests && tickData && tickData.quest) {
-      var qst = tickData.quest;
-      var gList = qst.givers || (qst.giver ? [qst.giver] : []);
+      let qst = tickData.quest;
+      let gList = qst.givers || (qst.giver ? [qst.giver] : []);
 
       // A) Marcador dedicado para o NPC de Missão (Sobrevivente Neutro / Trader)
-      for (var qi = 0; qi < gList.length; qi++) {
-        var gv = gList[qi];
-        var gs = worldToScreen(gv.x, gv.y);
+      for (let qi = 0; qi < gList.length; qi++) {
+        let gv = gList[qi];
+        let gvS = worldToScreen(gv.x, gv.y);
 
-        var isDone = qst.status === 4;
-        var isActive = qst.status === 2;
-        var isOffered = qst.status === 1;
+        let isDone = qst.status === 4;
+        let isActive = qst.status === 2;
+        let isOffered = qst.status === 1;
 
-        var qRingCol = isDone ? 'rgba(118, 255, 3, 0.85)' : (isActive ? 'rgba(77, 208, 225, 0.85)' : 'rgba(77, 208, 225, 0.55)');
-        var qFillCol = isDone ? '#76ff03' : (isActive ? '#4dd0e1' : '#26c6da');
-        var qIcon = isDone ? '✔' : (isActive ? '!' : '?');
+        let qRingCol = isDone ? 'rgba(118, 255, 3, 0.85)' : (isActive ? 'rgba(77, 208, 225, 0.85)' : 'rgba(77, 208, 225, 0.55)');
+        let qFillCol = isDone ? '#76ff03' : (isActive ? '#4dd0e1' : '#26c6da');
+        let qIcon = isDone ? '✔' : (isActive ? '!' : '?');
 
         ctx.beginPath();
-        ctx.arc(gs.x, gs.y, 11 + pulse * 4, 0, Math.PI * 2);
+        ctx.arc(gvS.x, gvS.y, 11 + pulse * 4, 0, Math.PI * 2);
         ctx.strokeStyle = qRingCol;
         ctx.lineWidth = 2.2;
         ctx.stroke();
 
         ctx.beginPath();
-        ctx.arc(gs.x, gs.y, 8, 0, Math.PI * 2);
+        ctx.arc(gvS.x, gvS.y, 8, 0, Math.PI * 2);
         ctx.fillStyle = qFillCol;
         ctx.fill();
         ctx.strokeStyle = '#051b20';
@@ -1387,9 +1392,9 @@
         ctx.fillStyle = '#051b20';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        ctx.fillText(qIcon, gs.x, gs.y + 0.5);
+        ctx.fillText(qIcon, gvS.x, gvS.y + 0.5);
 
-        var qLabel = gv.name || 'Sobrevivente Neutro';
+        let qLabel = gv.name || 'Sobrevivente Neutro';
         if (isDone) {
           qLabel = 'Sobrevivente (Entregar: ' + (qst.itemName || 'Missão') + '!)';
         } else if (isActive) {
@@ -1398,12 +1403,12 @@
           qLabel = 'Sobrevivente (Missão Disponível)';
         }
 
-        registerInteractive(gv.x, gv.y, gs.x, gs.y, qLabel, '#4dd0e1', '[' + qIcon + ']', 1);
+        registerInteractive(gv.x, gv.y, gvS.x, gvS.y, qLabel, '#4dd0e1', '[' + qIcon + ']', 1);
 
         if (cam.zoom >= LANDMARK_BADGE_ZOOM || isActive || isDone) {
           labelQueue.push({
-            sx: gs.x,
-            sy: gs.y,
+            sx: gvS.x,
+            sy: gvS.y,
             text: qLabel,
             color: isDone ? '#76ff03' : '#4dd0e1',
             prio: 1,
@@ -1413,10 +1418,10 @@
       }
 
       // B) Itens da Missão no chão (marcador pulsante roxo/dourado com linha pontilhada até ele)
-      var itList = qst.items || [];
-      for (var iti = 0; iti < itList.length; iti++) {
-        var it = itList[iti];
-        var its = worldToScreen(it.x, it.y);
+      let itList = qst.items || [];
+      for (let iti = 0; iti < itList.length; iti++) {
+        let it = itList[iti];
+        let its = worldToScreen(it.x, it.y);
 
         // Halo pulsante roxo/dourado
         ctx.beginPath();
@@ -1438,9 +1443,9 @@
 
         // Linha pontilhada opcional do jogador até o item
         if (tickData.player) {
-          var pScr = worldToScreen(tickData.player.x, tickData.player.y);
+          let pItem = worldToScreen(tickData.player.x, tickData.player.y);
           ctx.beginPath();
-          ctx.moveTo(pScr.x, pScr.y);
+          ctx.moveTo(pItem.x, pItem.y);
           ctx.lineTo(its.x, its.y);
           ctx.strokeStyle = 'rgba(255, 213, 79, 0.85)';
           ctx.setLineDash([7, 5]);
@@ -1449,7 +1454,7 @@
           ctx.setLineDash([]);
         }
 
-        var itLabel = '◆ ' + (it.name || qst.itemName || 'Item da Missão');
+        let itLabel = '◆ ' + (it.name || qst.itemName || 'Item da Missão');
         registerInteractive(it.x, it.y, its.x, its.y, 'Item da Missão: ' + (it.name || qst.itemName), '#ffd54f', '◆', 0);
 
         labelQueue.push({
@@ -1461,12 +1466,11 @@
           force: true
         });
       }
-    }
 
       // C) Alvo Fixo da Missão (Bandidos, Maleta, Crate, Boss)
-      var qTgt = (typeof tickData !== 'undefined' && tickData && tickData.quest && tickData.quest.target) || (typeof tickData !== 'undefined' && tickData && tickData.quest_target);
+      let qTgt = qst.target || tickData.quest_target;
       if (qTgt && typeof qTgt.x === 'number' && typeof qTgt.y === 'number') {
-        var tgts = worldToScreen(qTgt.x, qTgt.y);
+        let tgts = worldToScreen(qTgt.x, qTgt.y);
         ctx.beginPath();
         ctx.arc(tgts.x, tgts.y, 14 + pulse * 5, 0, Math.PI * 2);
         ctx.strokeStyle = 'rgba(255, 82, 82, 0.95)';
@@ -1481,10 +1485,10 @@
         ctx.lineWidth = 2;
         ctx.stroke();
 
-        if (typeof tickData !== 'undefined' && tickData && tickData.player) {
-          var pScr = worldToScreen(tickData.player.x, tickData.player.y);
+        if (tickData.player) {
+          let pTgt = worldToScreen(tickData.player.x, tickData.player.y);
           ctx.beginPath();
-          ctx.moveTo(pScr.x, pScr.y);
+          ctx.moveTo(pTgt.x, pTgt.y);
           ctx.lineTo(tgts.x, tgts.y);
           ctx.strokeStyle = 'rgba(255, 82, 82, 0.85)';
           ctx.setLineDash([8, 6]);
@@ -1493,20 +1497,21 @@
           ctx.setLineDash([]);
         }
 
-        var tgtLabel = '🎯 ' + (qTgt.label || 'Alvo da Missão');
+        let tgtLabel = '🎯 ' + (qTgt.label || 'Alvo da Missão');
         registerInteractive(qTgt.x, qTgt.y, tgts.x, tgts.y, tgtLabel, '#ff5252', '🎯', 0);
         labelQueue.push({ sx: tgts.x, sy: tgts.y, text: tgtLabel, color: '#ff5252', prio: 0, force: true });
       }
+    }
 
     // 6. Waypoint Tático Sincronizado com o PC (sempre exibe distância em metros)
     if (waypoint) {
-      var ws = worldToScreen(waypoint.x, waypoint.y);
-      var wpLabel = 'WP [' + sectorLabel(waypoint.x, waypoint.y) + ']';
+      let ws = worldToScreen(waypoint.x, waypoint.y);
+      let wpLabel = 'WP [' + sectorLabel(waypoint.x, waypoint.y) + ']';
 
       if (tickData && tickData.player) {
-        var p0 = tickData.player;
-        var psLine = worldToScreen(p0.x, p0.y);
-        var dMeters = Math.round(Math.hypot(waypoint.x - p0.x, waypoint.y - p0.y) / PX_PER_METER);
+        let p0 = tickData.player;
+        let psLine = worldToScreen(p0.x, p0.y);
+        let dMeters = Math.round(Math.hypot(waypoint.x - p0.x, waypoint.y - p0.y) / PX_PER_METER);
         wpLabel = 'WP • ' + dMeters + 'm';
 
         ctx.beginPath();
@@ -1542,9 +1547,9 @@
 
     // 7. Jogador em Tempo Real + Cone de Visão
     if (tickData && tickData.player) {
-      var pl = tickData.player;
-      var ps = worldToScreen(pl.x, pl.y);
-      var ang = pl.angle || 0;
+      let pl = tickData.player;
+      let ps = worldToScreen(pl.x, pl.y);
+      let ang = pl.angle || 0;
 
       ctx.save();
       ctx.translate(ps.x, ps.y);
@@ -1573,9 +1578,9 @@
     // 8. Desenha Rótulos Ordenados por Prioridade e Sem Sobreposição
     if (labelQueue.length) {
       labelQueue.sort(function (a, b) { return a.prio - b.prio; });
-      var placedRects = [];
-      for (var qi = 0; qi < labelQueue.length; qi++) {
-        var lq = labelQueue[qi];
+      let placedRects = [];
+      for (let lqi = 0; lqi < labelQueue.length; lqi++) {
+        let lq = labelQueue[lqi];
         tryDrawLabelBox(lq.sx, lq.sy, lq.text, lq.color, placedRects, lq.force);
       }
     }
@@ -1638,7 +1643,9 @@
     if (ids.length === 1) {
       dragStart = { x: e.clientX, y: e.clientY, camX: cam.x, camY: cam.y, time: Date.now() };
       movedDuringTouch = false;
+      startLongPress(e.clientX, e.clientY);
     } else if (ids.length === 2) {
+      cancelLongPress();
       var p1 = pointers[ids[0]];
       var p2 = pointers[ids[1]];
       lastPinchDist = Math.hypot(p2.x - p1.x, p2.y - p1.y);
@@ -1666,6 +1673,7 @@
       var dy = e.clientY - dragStart.y;
       if (Math.hypot(dx, dy) > 8) {
         movedDuringTouch = true;
+        cancelLongPress();
         setFollow(false);
         cam.x = dragStart.camX - dx / cam.zoom;
         cam.y = dragStart.camY - dy / cam.zoom;
@@ -1687,33 +1695,64 @@
     }
   });
 
+  var LONG_PRESS_MS = 450;
+  var DOUBLE_TAP_MS = 320;
+  var longPressTimer = 0;
+  var longPressFired = false;
+  var lastTap = null;
+
+  function cancelLongPress() {
+    if (longPressTimer) {
+      window.clearTimeout(longPressTimer);
+      longPressTimer = 0;
+    }
+  }
+
+  function waypointAtScreen(sx, sy) {
+    if (!filters.waypointTap || !mapData) return;
+    const hit = findNearestTarget(sx, sy, 26);
+    if (hit) {
+      placeWaypointAt(hit.x, hit.y);
+    } else {
+      const w = screenToWorld(sx, sy);
+      placeWaypointAt(w.x, w.y);
+    }
+  }
+
+  function startLongPress(sx, sy) {
+    cancelLongPress();
+    longPressFired = false;
+    longPressTimer = window.setTimeout(function () {
+      longPressTimer = 0;
+      if (movedDuringTouch || Object.keys(pointers).length !== 1) return;
+      longPressFired = true;
+      lastTap = null;
+      waypointAtScreen(sx, sy);
+    }, LONG_PRESS_MS);
+  }
+
   function onPointerRelease(e) {
-    var wasSingle = Object.keys(pointers).length === 1;
+    const wasSingle = Object.keys(pointers).length === 1;
     delete pointers[e.pointerId];
     lastPinchDist = 0;
+    cancelLongPress();
 
-    if (wasSingle && dragStart && !movedDuringTouch && (Date.now() - dragStart.time) < 420) {
-      var tappedIcon = findNearestTarget(e.clientX, e.clientY, 26);
-      if (tappedIcon) {
-        if (selectedPoi && isSameTarget(tappedIcon, selectedPoi) && filters.waypointTap) {
-          // Segundo toque no mesmo ícone marca Waypoint exatamente nele
-          placeWaypointAt(tappedIcon.x, tappedIcon.y);
-        } else {
-          selectedPoi = tappedIcon;
-          updatePoiCard();
-        }
+    if (wasSingle && dragStart && !movedDuringTouch && !longPressFired && e.type === 'pointerup' && (Date.now() - dragStart.time) < LONG_PRESS_MS) {
+      const now = Date.now();
+      if (lastTap && now - lastTap.t < DOUBLE_TAP_MS && Math.hypot(e.clientX - lastTap.x, e.clientY - lastTap.y) < 24) {
+        lastTap = null;
+        waypointAtScreen(e.clientX, e.clientY);
       } else {
-        selectedPoi = null;
+        lastTap = { t: now, x: e.clientX, y: e.clientY };
+        selectedPoi = findNearestTarget(e.clientX, e.clientY, 26);
         updatePoiCard();
-        if (filters.waypointTap && mapData) {
-          var wpt = screenToWorld(e.clientX, e.clientY);
-          placeWaypointAt(wpt.x, wpt.y);
-        }
       }
     }
+    longPressFired = false;
     if (Object.keys(pointers).length === 0) dragStart = null;
   }
 
+  canvas.addEventListener('contextmenu', function (e) { e.preventDefault(); });
   canvas.addEventListener('pointerup', onPointerRelease);
   canvas.addEventListener('pointercancel', onPointerRelease);
 
