@@ -199,6 +199,7 @@
 
     var activeWaypoint = null;
     var wpRafId = 0;
+    var companionClients = 0;
     var wpRootEl = null;
     var wpBadgeEl = null;
     var wpArrowEl = null;
@@ -222,6 +223,14 @@
         if (!data || !data[x] || !data[x][y]) return 0;
         var v = data[x][y][z || 0];
         return typeof v === 'number' ? v : (parseFloat(v) || 0);
+    }
+
+    // Valor cru da célula (string ou número), sem coerção; undefined se não existir
+    function readC2ArrayCellRaw(arrInst, x, y, z) {
+        if (!arrInst) return undefined;
+        var data = arrInst.rd || arrInst.arr;
+        if (!data || !data[x] || !data[x][y]) return undefined;
+        return data[x][y][z || 0];
     }
 
     function getC2ArrayWidth(arrInst) {
@@ -1269,7 +1278,7 @@
             } else if (qTargetSid > 0) {
                 if (types['t540'] && types['t540'].q && types['t540'].q[0]) {
                     try {
-                        var c2Name = readC2ArrayCell(types['t540'].q[0], qTargetSid, 0, 0);
+                        var c2Name = readC2ArrayCellRaw(types['t540'].q[0], qTargetSid, 0, 0);
                         if (typeof c2Name === 'string' && c2Name.trim().length > 0) {
                             questItemName = c2Name.trim();
                         }
@@ -1589,6 +1598,7 @@
 
     function pollTelemetry() {
         try {
+            if (companionClients <= 0) return;
             var rt = getRuntime();
             if (!rt || !rt.wa) return;
 
@@ -1647,7 +1657,7 @@
         style.id = 'mdz-waypoint-style';
         style.textContent = [
             '#mdz-waypoint-root { position: fixed; inset: 0; pointer-events: none; z-index: 99990; font-family: Consolas, "Segoe UI", monospace; }',
-            '#mdz-waypoint-badge { position: fixed; display: none; transform: translate(-50%, -50%); align-items: center; gap: 6px; background: rgba(14, 18, 12, 0.88); color: #ffd54f; border: 1.5px solid #ffd54f; border-radius: 999px; padding: 3px 9px; font-size: 11.5px; font-weight: 700; box-shadow: 0 2px 10px rgba(0,0,0,0.85); white-space: nowrap; }',
+            '#mdz-waypoint-badge { position: fixed; left: 0; top: 0; display: none; transform: translate(-50%, -50%); align-items: center; gap: 6px; background: rgba(14, 18, 12, 0.88); color: #ffd54f; border: 1.5px solid #ffd54f; border-radius: 999px; padding: 3px 9px; font-size: 11.5px; font-weight: 700; box-shadow: 0 2px 10px rgba(0,0,0,0.85); white-space: nowrap; }',
             '#mdz-waypoint-badge.is-onscreen { background: rgba(14, 18, 12, 0.72); border-color: #4dd0e1; color: #80deea; }',
             '#mdz-waypoint-arrow { display: inline-block; font-size: 13px; line-height: 1; transform-origin: center; }'
         ].join('\n');
@@ -1663,26 +1673,58 @@
         wpDistEl = document.getElementById('mdz-waypoint-dist');
     }
 
-    function updateWaypointFrame() {
+    var WP_MIN_FRAME_MS = 1000 / 12;
+    var wpLastFrameTs = 0;
+    var wpCanvasRect = null;
+    var wpLast = { display: '', cls: null, tx: null, arrow: null, rot: null, dist: null };
+
+    function refreshWpCanvasRect() {
+        var canvas = document.getElementById('c2canvas');
+        wpCanvasRect = canvas ? canvas.getBoundingClientRect() : null;
+    }
+    window.addEventListener('resize', refreshWpCanvasRect);
+
+    function wpSetDisplay(v) {
+        if (wpLast.display === v) return;
+        wpLast.display = v;
+        wpBadgeEl.style.display = v;
+    }
+
+    function wpSetBadge(x, y, onscreen, arrowText, rot, distText) {
+        var tx = 'translate(' + x + 'px,' + y + 'px) translate(-50%,-50%)';
+        if (wpLast.tx !== tx) { wpLast.tx = tx; wpBadgeEl.style.transform = tx; }
+        if (wpLast.cls !== onscreen) { wpLast.cls = onscreen; wpBadgeEl.classList.toggle('is-onscreen', onscreen); }
+        if (wpLast.arrow !== arrowText) { wpLast.arrow = arrowText; wpArrowEl.textContent = arrowText; }
+        if (wpLast.rot !== rot) { wpLast.rot = rot; wpArrowEl.style.transform = rot; }
+        if (wpLast.dist !== distText) { wpLast.dist = distText; wpDistEl.textContent = distText; }
+    }
+
+    function updateWaypointFrame(ts) {
         if (!activeWaypoint) {
             wpRafId = 0;
-            if (wpBadgeEl) wpBadgeEl.style.display = 'none';
+            if (wpBadgeEl) wpSetDisplay('none');
             return;
         }
+
+        if (ts - wpLastFrameTs < WP_MIN_FRAME_MS) {
+            wpRafId = window.requestAnimationFrame(updateWaypointFrame);
+            return;
+        }
+        wpLastFrameTs = ts;
 
         ensureWaypointHud();
 
         var rt = getRuntime();
         var layout = rt && rt.wa;
         if (!layout || !isMatchActive(rt, layout)) {
-            wpBadgeEl.style.display = 'none';
+            wpSetDisplay('none');
             wpRafId = window.requestAnimationFrame(updateWaypointFrame);
             return;
         }
 
         var player = findActivePlayer(rt, layout, layout.width || 17850, layout.height || 20000);
         if (!player) {
-            wpBadgeEl.style.display = 'none';
+            wpSetDisplay('none');
             wpRafId = window.requestAnimationFrame(updateWaypointFrame);
             return;
         }
@@ -1690,12 +1732,12 @@
         var dx = activeWaypoint.x - player.x;
         var dy = activeWaypoint.y - player.y;
         var distPx = Math.sqrt(dx * dx + dy * dy);
-        var distMeters = Math.round(distPx / PX_PER_METER);
+        var distText = Math.round(distPx / PX_PER_METER) + 'm';
 
         var vw = window.innerWidth || 1024;
         var vh = window.innerHeight || 768;
-        var canvas = document.getElementById('c2canvas');
-        var rect = canvas ? canvas.getBoundingClientRect() : { left: 0, top: 0, width: vw, height: vh };
+        if (!wpCanvasRect) refreshWpCanvasRect();
+        var rect = wpCanvasRect || { left: 0, top: 0, width: vw, height: vh };
 
         var sx = vw * 0.5;
         var sy = vh * 0.5;
@@ -1709,16 +1751,10 @@
         var padY = 46;
         var inside = hasLayerProj && sx >= padX && sx <= (vw - padX) && sy >= padY && sy <= (vh - padY);
 
-        wpBadgeEl.style.display = 'inline-flex';
+        wpSetDisplay('inline-flex');
         if (inside) {
-            wpBadgeEl.classList.add('is-onscreen');
-            wpBadgeEl.style.left = Math.round(sx) + 'px';
-            wpBadgeEl.style.top = Math.round(sy - 26) + 'px';
-            wpArrowEl.textContent = '◆';
-            wpArrowEl.style.transform = 'none';
-            wpDistEl.textContent = distMeters + 'm';
+            wpSetBadge(Math.round(sx), Math.round(sy - 26), true, '◆', 'none', distText);
         } else {
-            wpBadgeEl.classList.remove('is-onscreen');
             var angle = Math.atan2(dy, dx);
             var cos = Math.cos(angle);
             var sin = Math.sin(angle);
@@ -1732,11 +1768,7 @@
             var edgeY = (vh * 0.5) + sin * t;
             var deg = (angle * 180 / Math.PI).toFixed(1);
 
-            wpBadgeEl.style.left = Math.round(edgeX) + 'px';
-            wpBadgeEl.style.top = Math.round(edgeY) + 'px';
-            wpArrowEl.textContent = '➤';
-            wpArrowEl.style.transform = 'rotate(' + deg + 'deg)';
-            wpDistEl.textContent = distMeters + 'm';
+            wpSetBadge(Math.round(edgeX), Math.round(edgeY), false, '➤', 'rotate(' + deg + 'deg)', distText);
         }
 
         wpRafId = window.requestAnimationFrame(updateWaypointFrame);
@@ -1745,7 +1777,7 @@
     function setWaypoint(wp) {
         if (!wp || wp.clear || typeof wp.x !== 'number' || typeof wp.y !== 'number') {
             activeWaypoint = null;
-            if (wpBadgeEl) wpBadgeEl.style.display = 'none';
+            if (wpBadgeEl) wpSetDisplay('none');
             return;
         }
         activeWaypoint = { x: wp.x, y: wp.y };
@@ -1753,6 +1785,13 @@
             wpRafId = window.requestAnimationFrame(updateWaypointFrame);
         }
     }
+
+    window.addEventListener('CompanionClients', function (e) {
+        var n = Number(e && e.detail) || 0;
+        var was = companionClients;
+        companionClients = n;
+        if (was <= 0 && n > 0) window.MDZCompanionTelemetry.forceMapResend();
+    });
 
     window.addEventListener('CompanionWaypoint', function (e) {
         setWaypoint(e && e.detail ? e.detail : null);

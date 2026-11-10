@@ -135,6 +135,7 @@ public sealed class CompanionServer : IDisposable
         foreach (KeyValuePair<int, SseClient> kv in _sseClients)
             kv.Value.Dispose();
         _sseClients.Clear();
+        ClientCountChanged?.Invoke(0);
 
         try { Task.WaitAll(tasks.ToArray(), TimeSpan.FromSeconds(1)); } catch { }
         cts?.Dispose();

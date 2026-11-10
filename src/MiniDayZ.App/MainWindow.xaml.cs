@@ -35,6 +35,7 @@ public partial class MainWindow : Window
         InitializeComponent();
         _controls = new PcControlsManager(WebView);
         _companion.WaypointReceived += OnCompanionWaypointReceived;
+        _companion.ClientCountChanged += OnCompanionClientCountChanged;
         this.Closing += MainWindow_Closing;
         this.Closed += (_, _) => _companion.Dispose();
         this.Activated += (_, _) => WebView.Focus();
@@ -467,6 +468,23 @@ public partial class MainWindow : Window
 
         return WebView.CoreWebView2.ExecuteScriptAsync(
             $"window.dispatchEvent(new CustomEvent('SaveLoaded', {{ detail: {{ key: {keyJs}, data: {dataJs} }} }}));");
+    }
+
+    private void OnCompanionClientCountChanged(int count)
+    {
+        _ = Dispatcher.InvokeAsync(async () =>
+        {
+            if (WebView?.CoreWebView2 is null) return;
+            try
+            {
+                await WebView.CoreWebView2.ExecuteScriptAsync(
+                    $"window.dispatchEvent(new CustomEvent('CompanionClients', {{ detail: {count} }}));");
+            }
+            catch (Exception ex)
+            {
+                Logger.Warn($"[Companion] Erro ao notificar clientes: {ex.Message}");
+            }
+        });
     }
 
     private void OnCompanionWaypointReceived(string normalizedWaypointJson)

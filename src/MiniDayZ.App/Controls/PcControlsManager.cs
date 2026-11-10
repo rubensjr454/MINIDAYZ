@@ -11,6 +11,7 @@ namespace MiniDayZ.App.Controls;
 public sealed class PcControlsManager
 {
     private readonly WebView2 _webView;
+    private readonly SemaphoreSlim _clickGate = new(1, 1);
 
     public PcControlsManager(WebView2 webView)
     {
@@ -81,6 +82,24 @@ public sealed class PcControlsManager
     }
 
     private async Task DispatchNativeClickAsync(
+        string keyName,
+        string targetName,
+        bool isPixelMode,
+        double rawX,
+        double rawY)
+    {
+        await _clickGate.WaitAsync();
+        try
+        {
+            await DispatchNativeClickCoreAsync(keyName, targetName, isPixelMode, rawX, rawY);
+        }
+        finally
+        {
+            _clickGate.Release();
+        }
+    }
+
+    private async Task DispatchNativeClickCoreAsync(
         string keyName,
         string targetName,
         bool isPixelMode,

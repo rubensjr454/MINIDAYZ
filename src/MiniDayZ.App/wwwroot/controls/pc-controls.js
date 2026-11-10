@@ -194,7 +194,7 @@
         }
 
         const pt = resolveTargetPoint(key);
-        if (!pt) return false;
+        if (!pt || !pt.live) return false;
 
         if (window.chrome && window.chrome.webview) {
             window.chrome.webview.postMessage(JSON.stringify({
@@ -290,30 +290,42 @@
     //     Zero dependências externas — renderiza direto em Canvas/SVG nativo.
     // =========================================================================
     function createQrMatrix(text) {
+        // ECC L. blocks: [quantidade, codewords de dados por bloco]; ecCw = codewords de correção POR bloco.
         const VERSIONS = [
             null,
-            { size: 21, dataCw: 19, ecCw: 7, align: [] },
-            { size: 25, dataCw: 34, ecCw: 10, align: [6, 18] },
-            { size: 29, dataCw: 55, ecCw: 15, align: [6, 22] },
-            { size: 33, dataCw: 80, ecCw: 20, align: [6, 26] }
+            { size: 21, blocks: [[1, 19]], ecCw: 7, align: [] },
+            { size: 25, blocks: [[1, 34]], ecCw: 10, align: [6, 18] },
+            { size: 29, blocks: [[1, 55]], ecCw: 15, align: [6, 22] },
+            { size: 33, blocks: [[1, 80]], ecCw: 20, align: [6, 26] },
+            { size: 37, blocks: [[1, 108]], ecCw: 26, align: [6, 30] },
+            { size: 41, blocks: [[2, 68]], ecCw: 18, align: [6, 34] },
+            { size: 45, blocks: [[2, 78]], ecCw: 20, align: [6, 22, 38] },
+            { size: 49, blocks: [[2, 97]], ecCw: 24, align: [6, 24, 42] },
+            { size: 53, blocks: [[2, 116]], ecCw: 30, align: [6, 26, 46] },
+            { size: 57, blocks: [[2, 68], [2, 69]], ecCw: 18, align: [6, 28, 50] }
         ];
 
         const bytes = new TextEncoder().encode(String(text || ''));
-        let ver = 2;
-        for (let v = 1; v <= 4; v++) {
-            if (bytes.length + 2 <= VERSIONS[v].dataCw) {
+        let ver = 0;
+        for (let v = 1; v <= 10; v++) {
+            const total = VERSIONS[v].blocks.reduce(function (s, b) { return s + b[0] * b[1]; }, 0);
+            const ccBits = v <= 9 ? 8 : 16;
+            if (4 + ccBits + bytes.length * 8 <= total * 8) {
                 ver = v;
                 break;
             }
         }
+        if (!ver) return null;
+
         const cfg = VERSIONS[ver];
+        cfg.dataCw = cfg.blocks.reduce(function (s, b) { return s + b[0] * b[1]; }, 0);
         const bits = [];
         function pushBits(val, len) {
             for (let i = len - 1; i >= 0; i--) bits.push((val >>> i) & 1);
         }
 
         pushBits(0x4, 4); // Byte mode (0100)
-        pushBits(bytes.length, 8);
+        pushBits(bytes.length, ver <= 9 ? 8 : 16);
         for (let i = 0; i < bytes.length; i++) pushBits(bytes[i], 8);
 
         const maxBits = cfg.dataCw * 8;
@@ -358,17 +370,40 @@
             gen = next;
         }
 
-        const rem = new Uint8Array(cfg.ecCw);
-        for (let i = 0; i < data.length; i++) {
-            const factor = data[i] ^ rem[0];
-            for (let j = 0; j < cfg.ecCw - 1; j++) rem[j] = rem[j + 1];
-            rem[cfg.ecCw - 1] = 0;
-            for (let j = 0; j < cfg.ecCw; j++) {
-                rem[j] ^= gfMul(gen[j + 1], factor);
+        function rsRemainder(blockData) {
+            const rem = new Uint8Array(cfg.ecCw);
+            for (let i = 0; i < blockData.length; i++) {
+                const factor = blockData[i] ^ rem[0];
+                for (let j = 0; j < cfg.ecCw - 1; j++) rem[j] = rem[j + 1];
+                rem[cfg.ecCw - 1] = 0;
+                for (let j = 0; j < cfg.ecCw; j++) {
+                    rem[j] ^= gfMul(gen[j + 1], factor);
+                }
             }
+            return rem;
         }
 
-        const codewords = data.concat(Array.from(rem));
+        const dataBlocks = [];
+        const ecBlocks = [];
+        let offset = 0;
+        cfg.blocks.forEach(function (grp) {
+            for (let n = 0; n < grp[0]; n++) {
+                const blk = data.slice(offset, offset + grp[1]);
+                offset += grp[1];
+                dataBlocks.push(blk);
+                ecBlocks.push(rsRemainder(blk));
+            }
+        });
+
+        // Intercala: dados bloco a bloco, depois ECC bloco a bloco
+        const codewords = [];
+        const maxData = Math.max.apply(null, dataBlocks.map(function (b) { return b.length; }));
+        for (let i = 0; i < maxData; i++) {
+            dataBlocks.forEach(function (b) { if (i < b.length) codewords.push(b[i]); });
+        }
+        for (let i = 0; i < cfg.ecCw; i++) {
+            ecBlocks.forEach(function (b) { codewords.push(b[i]); });
+        }
         const size = cfg.size;
         const modules = Array.from({ length: size }, function () { return new Uint8Array(size); });
         const isFunc = Array.from({ length: size }, function () { return new Uint8Array(size); });
@@ -425,6 +460,22 @@
             if (i < 7) isFunc[size - 1 - i][8] = 1;
         }
         setFunc(size - 8, 8, true);
+
+        // Version Info (v7+): BCH(18,6)
+        if (ver >= 7) {
+            let vr = ver << 12;
+            for (let i = 17; i >= 12; i--) {
+                if ((vr >>> i) & 1) vr ^= (0x1F25 << (i - 12));
+            }
+            const vinfo = (ver << 12) | vr;
+            for (let i = 0; i < 18; i++) {
+                const bit = (vinfo >>> i) & 1;
+                const a = Math.floor(i / 3);
+                const b = (i % 3) + size - 11;
+                setFunc(a, b, bit);
+                setFunc(b, a, bit);
+            }
+        }
 
         // Zigzag de bits de dados + ECC
         let bitIdx = 0;
@@ -508,8 +559,9 @@
     }
 
     function renderQrCanvas(canvasEl, text) {
-        if (!canvasEl || !text) return;
+        if (!canvasEl || !text) return false;
         const mat = createQrMatrix(text);
+        if (!mat) return false;
         const quiet = 3;
         const total = mat.length + quiet * 2;
         const scale = 4;
@@ -526,6 +578,7 @@
                 }
             }
         }
+        return true;
     }
 
     function buildControlsTabUI() {
@@ -620,7 +673,7 @@
             toggleEl.disabled = false;
             compBodyEl.style.display = companionUrl ? 'flex' : 'none';
             compUrlEl.textContent = companionUrl;
-            if (companionUrl) renderQrCanvas(qrCanvasEl, companionUrl);
+            qrCanvasEl.style.display = (companionUrl && renderQrCanvas(qrCanvasEl, companionUrl)) ? "" : "none";
         }
 
         applyCompanionState(window.__MDZ_COMPANION__);
@@ -675,14 +728,34 @@
     // =========================================================================
     // 5. LISTENER DE TECLADO EM CAPTURE PHASE
     // =========================================================================
+    // Teclas que o plugin Keyboard do jogo usa (data.js: IsKeyDown W/A/S/D, OnKey Enter) nunca são engolidas.
+    const GAME_KEYS = { w: 1, a: 1, s: 1, d: 1, enter: 1 };
+    const swallowedCodes = {};
+
     window.addEventListener('keydown', function (e) {
+        const code = e.code || e.key;
+        if (swallowedCodes[code]) {
+            e.preventDefault();
+            e.stopPropagation();
+            return;
+        }
         if (e.repeat || (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA'))) return;
 
         const key = e.key.toLowerCase();
+        if (GAME_KEYS[key]) return;
         if (triggerKey(key)) {
+            swallowedCodes[code] = true;
             e.preventDefault();
             e.stopPropagation();
         }
+    }, true);
+
+    window.addEventListener('keyup', function (e) {
+        const code = e.code || e.key;
+        if (!swallowedCodes[code]) return;
+        delete swallowedCodes[code];
+        e.preventDefault();
+        e.stopPropagation();
     }, true);
 
     // API global exposta para o host WPF (PcControlsManager.cs)
