@@ -157,7 +157,7 @@
   </div>
 
   <div id="fab-col">
-    <button type="button" class="tac-btn active" id="btn-follow">🎯 Seguir</button>
+    <button type="button" class="tac-btn active" id="btn-follow">📍 Onde estou</button>
     <button type="button" class="tac-btn" id="btn-fit">🗺️ Ilha</button>
     <button type="button" class="tac-btn" id="btn-zoom-in">＋ Zoom</button>
     <button type="button" class="tac-btn" id="btn-zoom-out">－ Zoom</button>
@@ -349,6 +349,104 @@
     const cy = Math.floor((wy - g.originY) / g.cellH);
     if (cx < 0 || cy < 0 || cx >= g.cols || cy >= g.rows) return '--';
     return colLetters(cx) + (cy + 1);
+  }
+
+  const CARDINALS = ['N', 'NE', 'L', 'SE', 'S', 'SO', 'O', 'NO'];
+  const ISLAND_ZOOM = 0.06;
+  const AUTO_RECENTER_MS = 15000;
+  const TRAIL_STEP_MS = 2000;
+  const TRAIL_MAX_MS = 600000;
+  const PLACE_CODES = {
+    6: { name: 'CIDADE', size: 15 },
+    5: { name: 'BASE MILITAR', size: 12.5 },
+    9: { name: 'VILA', size: 12.5 },
+    11: { name: 'HOSPITAL', size: 11.5 },
+    15: { name: 'BOMBEIROS', size: 11.5 }
+  };
+
+  let placeNames = [];
+  let trail = [];
+  let lastInteract = Date.now();
+  let offscreenHit = null;
+  let hudBottom = 54;
+  let drawerTop = 0;
+
+  function bearingDeg(dx, dy) {
+    return (Math.atan2(dx, -dy) * 180 / Math.PI + 360) % 360;
+  }
+
+  function cardinal(deg) {
+    return CARDINALS[Math.round(deg / 45) % 8];
+  }
+
+  function fmtDist(m) {
+    return m >= 1000 ? (m / 1000).toFixed(m >= 10000 ? 0 : 1) + 'km' : Math.round(m) + 'm';
+  }
+
+  function distBearingText(fromX, fromY, toX, toY) {
+    const dx = toX - fromX;
+    const dy = toY - fromY;
+    return fmtDist(Math.hypot(dx, dy) / PX_PER_METER) + ' • ' + cardinal(bearingDeg(dx, dy));
+  }
+
+  function measureChrome() {
+    const hud = document.getElementById('top-hud');
+    const drw = document.getElementById('bottom-drawer');
+    if (hud) hudBottom = hud.getBoundingClientRect().bottom;
+    drawerTop = drw ? drw.getBoundingClientRect().top : window.innerHeight;
+  }
+
+  function markInteract() {
+    lastInteract = Date.now();
+  }
+
+  window.addEventListener('resize', measureChrome);
+  measureChrome();
+
+  function buildPlaceNames(data) {
+    placeNames = [];
+    const blk = data && data.blocks;
+    if (!blk || !blk.matrix || !blk.cols || !blk.rows) return;
+    const bp = blk.blockPx || 1020;
+    const seen = {};
+    for (let x = 0; x < blk.cols; x++) {
+      for (let y = 0; y < blk.rows; y++) {
+        const code = blk.matrix[x] && blk.matrix[x][y];
+        const st = PLACE_CODES[code];
+        if (!st || seen[x + ',' + y]) continue;
+        const stack = [[x, y]];
+        seen[x + ',' + y] = true;
+        let sx = 0, sy = 0, n = 0;
+        while (stack.length) {
+          const c = stack.pop();
+          sx += c[0]; sy += c[1]; n++;
+          const nb = [[c[0] + 1, c[1]], [c[0] - 1, c[1]], [c[0], c[1] + 1], [c[0], c[1] - 1]];
+          for (let k = 0; k < 4; k++) {
+            const nx = nb[k][0], ny = nb[k][1];
+            if (nx < 0 || ny < 0 || nx >= blk.cols || ny >= blk.rows || seen[nx + ',' + ny]) continue;
+            if (blk.matrix[nx][ny] !== code) continue;
+            seen[nx + ',' + ny] = true;
+            stack.push([nx, ny]);
+          }
+        }
+        placeNames.push({
+          x: blk.originX + (sx / n + 0.5) * bp,
+          y: blk.originY + (sy / n + 0.5) * bp,
+          text: st.name,
+          size: st.size + Math.min(3, n - 1)
+        });
+      }
+    }
+    placeNames.sort(function (a, b) { return b.size - a.size; });
+  }
+
+  function pushTrail(p) {
+    if (!p || p.inBunker) return;
+    const now = Date.now();
+    const last = trail[trail.length - 1];
+    if (last && Math.hypot(p.x - last.x, p.y - last.y) > 4000) trail = [];
+    if (!last || now - last.t >= TRAIL_STEP_MS) trail.push({ x: p.x, y: p.y, t: now });
+    while (trail.length && now - trail[0].t > TRAIL_MAX_MS) trail.shift();
   }
 
   function fitIsland() {
@@ -895,23 +993,6 @@
 
     // 9. Grade Tática de Coordenadas (A1..P16 / A1..J10) gravada direto no OffscreenCanvas
     var gSpec = getGridSpec();
-    staticCtx.strokeStyle = 'rgba(225, 240, 200, 0.20)';
-    staticCtx.lineWidth = Math.max(4, 1 / staticScale);
-
-    for (var gc = 0; gc <= gSpec.cols; gc++) {
-      var gx = gSpec.originX + gc * gSpec.cellW;
-      staticCtx.beginPath();
-      staticCtx.moveTo(gx, Math.max(0, gSpec.originY));
-      staticCtx.lineTo(gx, Math.min(mh, gSpec.originY + gSpec.rows * gSpec.cellH));
-      staticCtx.stroke();
-    }
-    for (var gr = 0; gr <= gSpec.rows; gr++) {
-      var gy = gSpec.originY + gr * gSpec.cellH;
-      staticCtx.beginPath();
-      staticCtx.moveTo(Math.max(0, gSpec.originX), gy);
-      staticCtx.lineTo(Math.min(mw, gSpec.originX + gSpec.cols * gSpec.cellW), gy);
-      staticCtx.stroke();
-    }
 
     // Marca d'água sutil do código de cada quadrante (ex.: A1, F8, J10) no canto superior esquerdo do setor
     staticCtx.font = 'bold 92px Consolas, monospace';
@@ -975,7 +1056,7 @@
       elWt.textContent = '💧 ' + p.water + '%';
       elFd.textContent = '🥫 ' + p.food + '%';
       elTm.textContent = '🌡 ' + (p.temp > 0 ? '+' + p.temp : p.temp);
-      elPos.textContent = 'SETOR ' + sectorLabel(p.x, p.y);
+      elPos.textContent = 'SETOR ' + sectorLabel(p.x, p.y) + ' • ' + cardinal(bearingDeg(Math.cos(p.angle || 0), Math.sin(p.angle || 0)));
       if (elQst) {
         if (tickData.quest && tickData.quest.status >= 1 && tickData.quest.status <= 4) {
           elQst.textContent = '📜 ' + (tickData.quest.taskTitle || 'Missão Ativa');
@@ -990,6 +1071,7 @@
     if (isMapStale()) hudTitle.textContent = 'CARREGANDO NOVA ILHA...';
     btnClearWp.style.display = waypoint ? 'block' : 'none';
     updatePoiCard();
+    measureChrome();
   }
 
   function worldToScreen(wx, wy) {
@@ -1059,54 +1141,290 @@
     return true;
   }
 
-  // Réguas fixas nas bordas da tela estilo DayZ/PUBG (A..P no topo, 1..16 na esquerda)
-  function drawStickyGridRulers(vw, vh) {
-    if (!mapData) return;
-    var g = getGridSpec();
+  function playerCell(g) {
+    if (!tickData || !tickData.player) return null;
+    const cx = Math.floor((tickData.player.x - g.originX) / g.cellW);
+    const cy = Math.floor((tickData.player.y - g.originY) / g.cellH);
+    return (cx >= 0 && cy >= 0 && cx < g.cols && cy < g.rows) ? { c: cx, r: cy } : null;
+  }
 
-    // Régua vertical esquerda (1..16)
-    ctx.fillStyle = 'rgba(11, 16, 13, 0.82)';
-    ctx.fillRect(0, 0, 20, vh);
-    ctx.strokeStyle = 'rgba(148, 180, 104, 0.35)';
+  function drawGridLines(vw, vh) {
+    if (!mapData) return;
+    const g = getGridSpec();
+    const tl = worldToScreen(g.originX, g.originY);
+    const cw = g.cellW * cam.zoom;
+    const ch = g.cellH * cam.zoom;
+    const x1 = tl.x + g.cols * cw;
+    const y1 = tl.y + g.rows * ch;
+    const a = cam.zoom < ISLAND_ZOOM ? 0.38 : 0.22;
+
+    ctx.strokeStyle = 'rgba(240, 246, 225, ' + a + ')';
     ctx.lineWidth = 1;
     ctx.beginPath();
-    ctx.moveTo(20.5, 0);
-    ctx.lineTo(20.5, vh);
+    for (let c = 0; c <= g.cols; c++) {
+      const x = Math.round(tl.x + c * cw) + 0.5;
+      if (x < -1 || x > vw + 1) continue;
+      ctx.moveTo(x, Math.max(0, tl.y));
+      ctx.lineTo(x, Math.min(vh, y1));
+    }
+    for (let r = 0; r <= g.rows; r++) {
+      const y = Math.round(tl.y + r * ch) + 0.5;
+      if (y < -1 || y > vh + 1) continue;
+      ctx.moveTo(Math.max(0, tl.x), y);
+      ctx.lineTo(Math.min(vw, x1), y);
+    }
     ctx.stroke();
+
+    const pc = playerCell(g);
+    if (pc) {
+      const sx = tl.x + pc.c * cw;
+      const sy = tl.y + pc.r * ch;
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.07)';
+      ctx.fillRect(sx, sy, cw, ch);
+      ctx.strokeStyle = 'rgba(255, 213, 79, 0.75)';
+      ctx.lineWidth = 1.5;
+      ctx.strokeRect(sx + 0.5, sy + 0.5, cw - 1, ch - 1);
+    }
+  }
+
+  // Réguas coladas na borda do mapa (presas na tela quando o mapa passa da borda)
+  function drawStickyGridRulers(vw, vh) {
+    if (!mapData) return;
+    const g = getGridSpec();
+    const tl = worldToScreen(g.originX, g.originY);
+    const cw = g.cellW * cam.zoom;
+    const ch = g.cellH * cam.zoom;
+    const pc = playerCell(g);
+    const bottomLimit = Math.min(vh, drawerTop || vh) - 12;
+    const topY = Math.max(hudBottom + 10, Math.min(bottomLimit - 30, tl.y - 10));
+    const leftX = Math.max(11, Math.min(vw - 11, tl.x - 12));
 
     ctx.font = 'bold 10px Consolas, monospace';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
 
-    for (var r = 0; r < g.rows; r++) {
-      var wy0 = g.originY + r * g.cellH;
-      var wyMid = wy0 + g.cellH * 0.5;
-      var sy0 = worldToScreen(0, wy0).y;
-      var syMid = worldToScreen(0, wyMid).y;
+    for (let c = 0; c < g.cols; c++) {
+      const sx = tl.x + (c + 0.5) * cw;
+      if (sx < leftX + 16 || sx > vw - 10) continue;
+      const cur = pc && pc.c === c;
+      ctx.fillStyle = cur ? 'rgba(255, 213, 79, 0.95)' : 'rgba(11, 16, 13, 0.80)';
+      ctx.fillRect(sx - 10, topY - 8, 20, 16);
+      ctx.fillStyle = cur ? '#1a1400' : '#dce775';
+      ctx.fillText(colLetters(c), sx, topY + 0.5);
+    }
+    for (let r = 0; r < g.rows; r++) {
+      const sy = tl.y + (r + 0.5) * ch;
+      if (sy < topY + 14 || sy > bottomLimit) continue;
+      const cur = pc && pc.r === r;
+      ctx.fillStyle = cur ? 'rgba(255, 213, 79, 0.95)' : 'rgba(11, 16, 13, 0.80)';
+      ctx.fillRect(leftX - 10, sy - 8, 20, 16);
+      ctx.fillStyle = cur ? '#1a1400' : '#cfe0b8';
+      ctx.fillText(String(r + 1), leftX, sy + 0.5);
+    }
+  }
 
-      if (sy0 >= 0 && sy0 <= vh) {
-        ctx.fillStyle = 'rgba(190, 215, 165, 0.35)';
-        ctx.fillRect(14, Math.round(sy0), 6, 1);
+  function drawPlaceNames(vw, vh) {
+    if (!placeNames.length || cam.zoom >= LABEL_ZOOM_THRESHOLD) return;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.lineJoin = 'round';
+    if ('letterSpacing' in ctx) ctx.letterSpacing = '1.5px';
+    const placed = [];
+    for (let i = 0; i < placeNames.length; i++) {
+      const pn = placeNames[i];
+      const s = worldToScreen(pn.x, pn.y);
+      if (s.x < -80 || s.y < -20 || s.x > vw + 80 || s.y > vh + 20) continue;
+      ctx.font = '700 ' + pn.size + 'px "Segoe UI", system-ui, sans-serif';
+      const w = ctx.measureText(pn.text).width;
+      const h = pn.size + 4;
+      let hit = false;
+      for (let k = 0; k < placed.length; k++) {
+        const r = placed[k];
+        if (s.x - w / 2 < r.x + r.w && s.x + w / 2 > r.x && s.y - h / 2 < r.y + r.h && s.y + h / 2 > r.y) { hit = true; break; }
       }
-      if (syMid >= 14 && syMid <= vh - 10) {
-        ctx.fillStyle = '#cfe0b8';
-        ctx.fillText(String(r + 1), 10, syMid);
-      }
+      if (hit) continue;
+      placed.push({ x: s.x - w / 2, y: s.y - h / 2, w: w, h: h });
+      ctx.strokeStyle = 'rgba(8, 12, 10, 0.88)';
+      ctx.lineWidth = 3.5;
+      ctx.strokeText(pn.text, s.x, s.y);
+      ctx.fillStyle = '#f6efd8';
+      ctx.fillText(pn.text, s.x, s.y);
+    }
+    if ('letterSpacing' in ctx) ctx.letterSpacing = '0px';
+  }
+
+  function drawTrail() {
+    if (trail.length < 2) return;
+    const now = Date.now();
+    ctx.lineWidth = 2.2;
+    ctx.setLineDash([5, 5]);
+    let prev = worldToScreen(trail[0].x, trail[0].y);
+    for (let i = 1; i < trail.length; i++) {
+      const cur = worldToScreen(trail[i].x, trail[i].y);
+      const age = (now - trail[i].t) / TRAIL_MAX_MS;
+      ctx.strokeStyle = 'rgba(255, 255, 255, ' + (0.08 + 0.62 * (1 - age)).toFixed(3) + ')';
+      ctx.beginPath();
+      ctx.moveTo(prev.x, prev.y);
+      ctx.lineTo(cur.x, cur.y);
+      ctx.stroke();
+      prev = cur;
+    }
+    ctx.setLineDash([]);
+  }
+
+  function drawPlayer(pl, pulse) {
+    const ps = worldToScreen(pl.x, pl.y);
+    const ang = pl.angle || 0;
+
+    if (cam.zoom < ISLAND_ZOOM) {
+      const halo = ctx.createRadialGradient(ps.x, ps.y, 6, ps.x, ps.y, 40);
+      halo.addColorStop(0, 'rgba(255, 255, 255, 0.45)');
+      halo.addColorStop(1, 'rgba(255, 255, 255, 0)');
+      ctx.fillStyle = halo;
+      ctx.beginPath();
+      ctx.arc(ps.x, ps.y, 40, 0, Math.PI * 2);
+      ctx.fill();
     }
 
-    // Marcadores horizontais de coluna (A..P) logo abaixo da barra ou no topo visível do mapa
-    var topMapY = Math.max(54, worldToScreen(0, Math.max(0, g.originY)).y + 10);
-    topMapY = Math.min(vh - 46, topMapY);
-    for (var c = 0; c < g.cols; c++) {
-      var wxMid = g.originX + (c + 0.5) * g.cellW;
-      var sxMid = worldToScreen(wxMid, 0).x;
-      if (sxMid >= 28 && sxMid <= vw - 14) {
-        ctx.fillStyle = 'rgba(11, 16, 13, 0.76)';
-        ctx.fillRect(sxMid - 10, topMapY - 8, 20, 15);
-        ctx.fillStyle = '#dce775';
-        ctx.fillText(colLetters(c), sxMid, topMapY);
-      }
+    ctx.beginPath();
+    ctx.arc(ps.x, ps.y, 16 + pulse * 10, 0, Math.PI * 2);
+    ctx.strokeStyle = 'rgba(255, 255, 255, ' + (0.85 - pulse * 0.6).toFixed(3) + ')';
+    ctx.lineWidth = 2.5;
+    ctx.stroke();
+
+    ctx.save();
+    ctx.translate(ps.x, ps.y);
+    ctx.rotate(ang);
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.arc(0, 0, 60, -0.5, 0.5);
+    ctx.closePath();
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.16)';
+    ctx.fill();
+
+    ctx.beginPath();
+    ctx.moveTo(21, 0);
+    ctx.lineTo(-14, 13.5);
+    ctx.lineTo(-8, 0);
+    ctx.lineTo(-14, -13.5);
+    ctx.closePath();
+    ctx.fillStyle = '#ffffff';
+    ctx.fill();
+    ctx.strokeStyle = '#0b1210';
+    ctx.lineWidth = 3;
+    ctx.lineJoin = 'round';
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  function drawOffscreenPlayer(pl, vw, vh) {
+    offscreenHit = null;
+    const ps = worldToScreen(pl.x, pl.y);
+    const top = hudBottom + 8;
+    const bottom = Math.min(vh, drawerTop || vh) - 8;
+    if (ps.x >= 0 && ps.x <= vw && ps.y >= top && ps.y <= bottom) return;
+
+    const cx = vw * 0.5;
+    const cy = (top + bottom) * 0.5;
+    const dx = ps.x - cx;
+    const dy = ps.y - cy;
+    const m = 30;
+    const sx = Math.abs(dx) > 0.001 ? ((vw * 0.5 - m) / Math.abs(dx)) : Infinity;
+    const sy = Math.abs(dy) > 0.001 ? (((bottom - top) * 0.5 - m) / Math.abs(dy)) : Infinity;
+    const k = Math.min(sx, sy);
+    const ex = cx + dx * k;
+    const ey = cy + dy * k;
+    const ang = Math.atan2(dy, dx);
+    const c = screenToWorld(vw * 0.5, vh * 0.5);
+    const txt = fmtDist(Math.hypot(pl.x - c.x, pl.y - c.y) / PX_PER_METER);
+
+    ctx.beginPath();
+    ctx.arc(ex, ey, 20, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(11, 16, 13, 0.92)';
+    ctx.fill();
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    ctx.save();
+    ctx.translate(ex, ey);
+    ctx.rotate(ang);
+    ctx.beginPath();
+    ctx.moveTo(27, 0);
+    ctx.lineTo(19, -6);
+    ctx.lineTo(19, 6);
+    ctx.closePath();
+    ctx.fillStyle = '#ffffff';
+    ctx.fill();
+    ctx.restore();
+
+    ctx.font = 'bold 10px Consolas, monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText(txt, ex, ey + 0.5);
+    offscreenHit = { x: ex, y: ey, r: 26 };
+  }
+
+  function drawCompass(vw, vh) {
+    const cx = vw - 34;
+    const cy = Math.min(vh, drawerTop || vh) - 34;
+    ctx.beginPath();
+    ctx.arc(cx, cy, 19, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(11, 16, 13, 0.85)';
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(232, 239, 226, 0.55)';
+    ctx.lineWidth = 1.2;
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(cx, cy - 14);
+    ctx.lineTo(cx + 5, cy);
+    ctx.lineTo(cx - 5, cy);
+    ctx.closePath();
+    ctx.fillStyle = '#ff5252';
+    ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(cx, cy + 14);
+    ctx.lineTo(cx + 5, cy);
+    ctx.lineTo(cx - 5, cy);
+    ctx.closePath();
+    ctx.fillStyle = '#e8efe2';
+    ctx.fill();
+    ctx.font = 'bold 10px "Segoe UI", system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = 'rgba(8, 12, 10, 0.9)';
+    ctx.strokeText('N', cx, cy - 26);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText('N', cx, cy - 26);
+  }
+
+  function drawScaleBar(vw, vh) {
+    const steps = [10, 25, 50, 100, 200, 500, 1000, 2000, 5000];
+    const pxPerM = PX_PER_METER * cam.zoom;
+    let meters = steps[steps.length - 1];
+    for (let i = 0; i < steps.length; i++) {
+      if (steps[i] * pxPerM >= 60) { meters = steps[i]; break; }
     }
+    const w = Math.round(meters * pxPerM);
+    const x = 40;
+    const y = Math.min(vh, drawerTop || vh) - 18;
+    ctx.fillStyle = 'rgba(11, 16, 13, 0.78)';
+    ctx.fillRect(x - 6, y - 16, w + 12, 26);
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(x, y - 4);
+    ctx.lineTo(x, y + 3);
+    ctx.lineTo(x + w, y + 3);
+    ctx.lineTo(x + w, y - 4);
+    ctx.stroke();
+    ctx.font = 'bold 10px Consolas, monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText(fmtDist(meters), x + w / 2, y - 8);
   }
 
   function renderFrame() {
@@ -1116,6 +1434,9 @@
     ctx.fillStyle = '#182b30';
     ctx.fillRect(0, 0, vw, vh);
 
+    if (!cam.follow && tickData && tickData.player && Date.now() - lastInteract > AUTO_RECENTER_MS) {
+      setFollow(true);
+    }
     if (cam.follow && tickData && tickData.player) {
       cam.x += (tickData.player.x - cam.x) * 0.22;
       cam.y += (tickData.player.y - cam.y) * 0.22;
@@ -1128,6 +1449,8 @@
       let dh = mapData.height * cam.zoom;
       ctx.imageSmoothingEnabled = cam.zoom < 0.45;
       ctx.drawImage(staticLayer, tl.x, tl.y, dw, dh);
+      drawGridLines(vw, vh);
+      drawTrail();
     }
 
     let pulse = 0.5 + 0.5 * Math.sin(Date.now() * 0.005);
@@ -1497,11 +1820,13 @@
           ctx.setLineDash([]);
         }
 
-        let tgtLabel = '🎯 ' + (qTgt.label || 'Alvo da Missão');
+        let tgtLabel = '🎯 ' + (qTgt.label || 'Alvo da Missão') + (tickData.player ? ' • ' + distBearingText(tickData.player.x, tickData.player.y, qTgt.x, qTgt.y) : '');
         registerInteractive(qTgt.x, qTgt.y, tgts.x, tgts.y, tgtLabel, '#ff5252', '🎯', 0);
         labelQueue.push({ sx: tgts.x, sy: tgts.y, text: tgtLabel, color: '#ff5252', prio: 0, force: true });
       }
     }
+
+    drawPlaceNames(vw, vh);
 
     // 6. Waypoint Tático Sincronizado com o PC (sempre exibe distância em metros)
     if (waypoint) {
@@ -1511,8 +1836,7 @@
       if (tickData && tickData.player) {
         let p0 = tickData.player;
         let psLine = worldToScreen(p0.x, p0.y);
-        let dMeters = Math.round(Math.hypot(waypoint.x - p0.x, waypoint.y - p0.y) / PX_PER_METER);
-        wpLabel = 'WP • ' + dMeters + 'm';
+        wpLabel = 'WP • ' + distBearingText(p0.x, p0.y, waypoint.x, waypoint.y);
 
         ctx.beginPath();
         ctx.moveTo(psLine.x, psLine.y);
@@ -1547,37 +1871,12 @@
 
     // 7. Jogador em Tempo Real + Cone de Visão
     if (tickData && tickData.player) {
-      let pl = tickData.player;
-      let ps = worldToScreen(pl.x, pl.y);
-      let ang = pl.angle || 0;
-
-      ctx.save();
-      ctx.translate(ps.x, ps.y);
-      ctx.rotate(ang);
-      ctx.beginPath();
-      ctx.moveTo(0, 0);
-      ctx.arc(0, 0, 30, -0.45, 0.45);
-      ctx.closePath();
-      ctx.fillStyle = 'rgba(118, 255, 3, 0.24)';
-      ctx.fill();
-
-      ctx.beginPath();
-      ctx.moveTo(10.5, 0);
-      ctx.lineTo(-7, 6.8);
-      ctx.lineTo(-4, 0);
-      ctx.lineTo(-7, -6.8);
-      ctx.closePath();
-      ctx.fillStyle = '#76ff03';
-      ctx.fill();
-      ctx.strokeStyle = '#091804';
-      ctx.lineWidth = 2;
-      ctx.stroke();
-      ctx.restore();
+      drawPlayer(tickData.player, pulse);
     }
 
     // 8. Desenha Rótulos Ordenados por Prioridade e Sem Sobreposição
     if (labelQueue.length) {
-      labelQueue.sort(function (a, b) { return a.prio - b.prio; });
+      labelQueue.sort(function (a, b) { return (b.force - a.force) || (a.prio - b.prio); });
       let placedRects = [];
       for (let lqi = 0; lqi < labelQueue.length; lqi++) {
         let lq = labelQueue[lqi];
@@ -1587,6 +1886,10 @@
 
     // 9. Réguas laterais de coordenadas (A..P / 1..16)
     drawStickyGridRulers(vw, vh);
+    drawCompass(vw, vh);
+    drawScaleBar(vw, vh);
+    if (tickData && tickData.player) drawOffscreenPlayer(tickData.player, vw, vh);
+    else offscreenHit = null;
 
     window.requestAnimationFrame(renderFrame);
   }
@@ -1638,6 +1941,7 @@
   }
 
   canvas.addEventListener('pointerdown', function (e) {
+    markInteract();
     pointers[e.pointerId] = { x: e.clientX, y: e.clientY };
     var ids = Object.keys(pointers);
     if (ids.length === 1) {
@@ -1739,7 +2043,10 @@
 
     if (wasSingle && dragStart && !movedDuringTouch && !longPressFired && e.type === 'pointerup' && (Date.now() - dragStart.time) < LONG_PRESS_MS) {
       const now = Date.now();
-      if (lastTap && now - lastTap.t < DOUBLE_TAP_MS && Math.hypot(e.clientX - lastTap.x, e.clientY - lastTap.y) < 24) {
+      if (offscreenHit && Math.hypot(e.clientX - offscreenHit.x, e.clientY - offscreenHit.y) <= offscreenHit.r) {
+        lastTap = null;
+        centerOnPlayer();
+      } else if (lastTap && now - lastTap.t < DOUBLE_TAP_MS && Math.hypot(e.clientX - lastTap.x, e.clientY - lastTap.y) < 24) {
         lastTap = null;
         waypointAtScreen(e.clientX, e.clientY);
       } else {
@@ -1758,6 +2065,7 @@
 
   canvas.addEventListener('wheel', function (e) {
     e.preventDefault();
+    markInteract();
     var before = screenToWorld(e.clientX, e.clientY);
     var factor = e.deltaY < 0 ? 1.18 : 0.85;
     cam.zoom = Math.max(0.012, Math.min(0.85, cam.zoom * factor));
@@ -1767,17 +2075,27 @@
   }, { passive: false });
 
   // Botões da UI
-  btnFollow.addEventListener('click', function () {
-    setFollow(!cam.follow);
-  });
+  function centerOnPlayer() {
+    markInteract();
+    setFollow(true);
+    if (tickData && tickData.player) {
+      cam.x = tickData.player.x;
+      cam.y = tickData.player.y;
+    }
+  }
+
+  btnFollow.addEventListener('click', centerOnPlayer);
   document.getElementById('btn-fit').addEventListener('click', function () {
+    markInteract();
     setFollow(false);
     fitIsland();
   });
   document.getElementById('btn-zoom-in').addEventListener('click', function () {
+    markInteract();
     cam.zoom = Math.min(0.85, cam.zoom * 1.35);
   });
   document.getElementById('btn-zoom-out').addEventListener('click', function () {
+    markInteract();
     cam.zoom = Math.max(0.012, cam.zoom / 1.35);
   });
   btnClearWp.addEventListener('click', function () {
@@ -1799,6 +2117,7 @@
   document.getElementById('drawer-head').addEventListener('click', function () {
     var col = drawer.classList.toggle('collapsed');
     drawerToggleLbl.textContent = col ? '[Expandir ▲]' : '[Recolher ▼]';
+    measureChrome();
   });
 
   document.getElementById('flt-secrets').addEventListener('change', function (e) { filters.secrets = e.target.checked; });
@@ -1822,6 +2141,8 @@
     if (!data) return;
     var firstLoad = !mapData || mapData.isFallback || (mapData.mapHash || '') !== (data.mapHash || '') || mapData.layout !== data.layout;
     mapData = data;
+    if (firstLoad) trail = [];
+    buildPlaceNames(data);
     if (typeof staticCtx !== 'undefined' && staticCtx && typeof staticLayer !== 'undefined' && staticLayer) {
       staticCtx.clearRect(0, 0, staticLayer.width, staticLayer.height);
     }
@@ -1903,6 +2224,7 @@
     if (!data) return;
     var hadTick = !!tickData;
     tickData = data;
+    pushTrail(data.player);
 
     if (!mapData && data.mapWidth && data.mapHeight) {
       mapData = {
