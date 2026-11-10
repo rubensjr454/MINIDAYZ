@@ -103,7 +103,13 @@
     margin-top: 8px; padding-top: 7px; border-top: 1px solid rgba(140, 172, 98, 0.25);
     display: grid; grid-template-columns: repeat(auto-fit, minmax(205px, 1fr)); gap: 5px 12px;
   }
-  #bottom-drawer.collapsed #filters-body { display: none; }
+  #bottom-drawer.collapsed #filters-body, #bottom-drawer.collapsed #drawer-extra { display: none; }
+  .cnt { color: var(--muted); font-weight: 700; }
+  .flt-actions { display: flex; gap: 8px; margin-top: 8px; }
+  #legend { margin-top: 8px; display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 4px 10px; max-height: 32vh; overflow-y: auto; }
+  #legend.hidden { display: none; }
+  .lg-item { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text); }
+  .lg-item canvas { width: 20px; height: 20px; flex-shrink: 0; }
   .flt-item {
     display: flex; align-items: center; gap: 8px; font-size: 11.5px; cursor: pointer;
     padding: 2px 2px;
@@ -177,28 +183,35 @@
     <div id="filters-body">
       <label class="flt-item">
         <input type="checkbox" id="flt-secrets" checked />
-        <span class="badge-gold">★ Secret Location (1/Ilha) &amp; Bunkers</span>
+        <span class="badge-gold">★ Secret Location (1/Ilha) &amp; Bunkers <b class="cnt" id="cnt-secrets"></b></span>
       </label>
       <label class="flt-item">
         <input type="checkbox" id="flt-crashes" checked />
-        <span class="badge-crash">🚁 Heli Crashes, Veículos &amp; Tendas</span>
+        <span class="badge-crash">🚁 Heli Crashes, Veículos &amp; Tendas <b class="cnt" id="cnt-crashes"></b></span>
       </label>
       <label class="flt-item">
         <input type="checkbox" id="flt-landmarks" checked />
-        <span class="badge-lmk">🏛️ Pontos de Referência (Igreja, Hosp., Mil.)</span>
+        <span class="badge-lmk">🏛️ Pontos de Referência (Igreja, Hosp., Mil.) <b class="cnt" id="cnt-landmarks"></b></span>
       </label>
       <label class="flt-item">
         <input type="checkbox" id="flt-threats" checked />
-        <span class="badge-threat">⚠️ Radar de Ameaças Próximas</span>
+        <span class="badge-threat">⚠️ Radar de Ameaças Próximas <b class="cnt" id="cnt-threats"></b></span>
       </label>
       <label class="flt-item">
         <input type="checkbox" id="flt-quests" checked />
-        <span class="badge-quest">❗ Missões &amp; Sobreviventes Neutros</span>
+        <span class="badge-quest">❗ Missões &amp; Sobreviventes Neutros <b class="cnt" id="cnt-quests"></b></span>
       </label>
       <label class="flt-item">
         <input type="checkbox" id="flt-waypoint" checked />
         <span class="badge-wp">📍 Waypoint no PC: segurar ou duplo toque no mapa</span>
       </label>
+    </div>
+    <div id="drawer-extra">
+      <div class="flt-actions">
+        <button type="button" class="mini-btn" id="btn-essential">Só essencial</button>
+        <button type="button" class="mini-btn close" id="btn-legend">Legenda ▸</button>
+      </div>
+      <div id="legend" class="hidden"></div>
     </div>
   </div>
 
@@ -217,7 +230,7 @@
   };
 
   var LANDMARK_STYLE = {
-    mil:    { icon: '★', color: '#ff6e6e', stroke: '#c62828', prio: 3 },
+    mil:    { icon: '★', color: '#8fa3b8', stroke: '#4f6378', prio: 3 },
     med:    { icon: '✚', color: '#4dd0e1', stroke: '#00838f', prio: 3 },
     ch:     { icon: '⛪', color: '#fff176', stroke: '#f9a825', prio: 3 },
     castle: { icon: '🏰', color: '#ffe082', stroke: '#ff8f00', prio: 3 },
@@ -697,6 +710,176 @@
         });
       }
     }
+  }
+
+  // =========================================================================
+  // ÍCONES PRÓPRIOS (sem emoji no canvas): forma + cor exclusivas por categoria
+  // =========================================================================
+  const ICON_STYLE = {
+    player:  { name: 'Você', color: '#ffffff', shape: 'player', legend: true },
+    wp:      { name: 'Waypoint', color: '#4dd0e1', shape: 'wp', legend: true },
+    secret:  { name: 'Local Secreto', color: '#ffd54f', shape: 'star', prio: 1, essential: true, pulse: true, legend: true },
+    bunker:  { name: 'Bunker / Extração', color: '#ffd54f', shape: 'diamond', prio: 1, essential: true, pulse: true, legend: true },
+    quest:   { name: 'Missão (! ativa, ? disponível)', color: '#4dd0e1', shape: 'quest', glyph: '!', legend: true },
+    qitem:   { name: 'Item de missão', color: '#4dd0e1', shape: 'qitem', legend: true },
+    target:  { name: 'Alvo da missão', color: '#ff5252', shape: 'target', legend: true },
+    heli:    { name: 'Heli Crash', color: '#ff8a3d', shape: 'triangle', prio: 2, pulse: true, legend: true },
+    vehicle: { name: 'Veículo', color: '#29b6f6', shape: 'rect', prio: 2, legend: true },
+    tent:    { name: 'Tenda', color: '#9ccc65', shape: 'tent', prio: 3, legend: true },
+    med:     { name: 'Hospital', color: '#4dd0e1', shape: 'cross', prio: 3, legend: true },
+    mil:     { name: 'Militar', color: '#8fa3b8', shape: 'shield', prio: 3, legend: true },
+    pol:     { name: 'Polícia', color: '#9fa8da', shape: 'letter', glyph: 'P', prio: 4, legend: true },
+    fire:    { name: 'Bombeiros', color: '#e0906e', shape: 'letter', glyph: 'B', prio: 4, legend: true },
+    gas:     { name: 'Posto', color: '#ffb74d', shape: 'letter', glyph: 'G', prio: 4, legend: true },
+    gun:     { name: 'Loja de armas', color: '#ce93d8', shape: 'letter', glyph: 'A', prio: 4, legend: true },
+    ch:      { name: 'Igreja', color: '#e6d38a', shape: 'letter', glyph: 'I', prio: 4, legend: true },
+    castle:  { name: 'Castelo', color: '#d7c9a0', shape: 'letter', glyph: 'C', prio: 4, legend: true },
+    shop:    { name: 'Mercado', color: '#bcaaa4', shape: 'letter', glyph: 'M', prio: 5, minZoom: 0.075, legend: true },
+    school:  { name: 'Escola', color: '#b0bec5', shape: 'letter', glyph: 'E', prio: 5, minZoom: 0.075, legend: true },
+    pump:    { name: 'Bomba d\'água', color: '#4fc3f7', shape: 'drop', prio: 5, minZoom: 0.075, legend: true },
+    hulk:    { name: 'Ameaça forte (Hulk)', color: '#ff1744', shape: 'dot', size: 1.25, prio: 2, pulse: true, legend: true },
+    bandit:  { name: 'Ameaça (bandido)', color: '#ff5252', shape: 'dot', prio: 3, legend: true },
+    special: { name: 'Zumbi especial / lobo', color: '#ff5252', shape: 'ring', prio: 4, legend: true },
+    zed:     { name: 'Zumbi', color: '#ff8a80', shape: 'dot', size: 0.55, prio: 6 },
+    ally:    { name: 'Sobrevivente aliado', color: '#69f0ae', shape: 'dot', size: 0.8, prio: 3, legend: true }
+  };
+  const ICON_OUTLINE = '#0b1210';
+  const CLUSTER_PX = 24;
+
+  function iconPath(c, shape, x, y, r) {
+    c.beginPath();
+    switch (shape) {
+      case 'star': {
+        let rot = -Math.PI / 2;
+        for (let i = 0; i < 10; i++) {
+          const rr = i % 2 ? r * 0.48 : r * 1.15;
+          c.lineTo(x + Math.cos(rot) * rr, y + Math.sin(rot) * rr);
+          rot += Math.PI / 5;
+        }
+        break;
+      }
+      case 'diamond': c.moveTo(x, y - r * 1.1); c.lineTo(x + r * 1.1, y); c.lineTo(x, y + r * 1.1); c.lineTo(x - r * 1.1, y); break;
+      case 'triangle': c.moveTo(x, y - r * 1.1); c.lineTo(x + r * 1.05, y + r * 0.85); c.lineTo(x - r * 1.05, y + r * 0.85); break;
+      case 'tent': c.moveTo(x, y - r); c.lineTo(x + r * 1.15, y + r * 0.8); c.lineTo(x + r * 0.25, y + r * 0.8); c.lineTo(x, y + r * 0.1); c.lineTo(x - r * 0.25, y + r * 0.8); c.lineTo(x - r * 1.15, y + r * 0.8); break;
+      case 'rect': c.rect(x - r, y - r * 0.7, r * 2, r * 1.4); break;
+      case 'qitem': c.rect(x - r * 0.75, y - r * 0.75, r * 1.5, r * 1.5); break;
+      case 'cross': {
+        const a = r * 0.38;
+        c.moveTo(x - a, y - r); c.lineTo(x + a, y - r); c.lineTo(x + a, y - a); c.lineTo(x + r, y - a); c.lineTo(x + r, y + a);
+        c.lineTo(x + a, y + a); c.lineTo(x + a, y + r); c.lineTo(x - a, y + r); c.lineTo(x - a, y + a); c.lineTo(x - r, y + a);
+        c.lineTo(x - r, y - a); c.lineTo(x - a, y - a);
+        break;
+      }
+      case 'shield':
+        c.moveTo(x - r, y - r * 0.85); c.lineTo(x + r, y - r * 0.85); c.lineTo(x + r, y);
+        c.quadraticCurveTo(x + r * 0.9, y + r * 0.8, x, y + r * 1.15);
+        c.quadraticCurveTo(x - r * 0.9, y + r * 0.8, x - r, y);
+        break;
+      case 'drop':
+        c.moveTo(x, y - r * 1.15);
+        c.quadraticCurveTo(x + r, y + r * 0.1, x + r * 0.75, y + r * 0.45);
+        c.arc(x, y + r * 0.3, r * 0.75, 0.2, Math.PI - 0.2);
+        c.quadraticCurveTo(x - r, y + r * 0.1, x, y - r * 1.15);
+        break;
+      case 'letter': c.rect(x - r, y - r, r * 2, r * 2); break;
+      default: c.arc(x, y, r, 0, Math.PI * 2);
+    }
+    c.closePath();
+  }
+
+  function drawIconShape(c, key, x, y, r, glyph) {
+    const st = ICON_STYLE[key];
+    if (!st) return;
+    const rad = r * (st.size || 1);
+    c.save();
+    c.lineJoin = 'round';
+    if (st.shape === 'player') {
+      c.translate(x, y);
+      c.beginPath();
+      c.moveTo(rad * 1.2, 0); c.lineTo(-rad * 0.8, rad * 0.8); c.lineTo(-rad * 0.45, 0); c.lineTo(-rad * 0.8, -rad * 0.8);
+      c.closePath();
+      c.fillStyle = '#ffffff'; c.fill();
+      c.strokeStyle = ICON_OUTLINE; c.lineWidth = 1.6; c.stroke();
+    } else if (st.shape === 'wp') {
+      c.beginPath(); c.arc(x, y, rad, 0, Math.PI * 2);
+      c.strokeStyle = st.color; c.lineWidth = 2.2; c.stroke();
+      c.beginPath(); c.arc(x, y, rad * 0.4, 0, Math.PI * 2);
+      c.fillStyle = '#ffd54f'; c.fill();
+    } else if (st.shape === 'target') {
+      c.beginPath(); c.arc(x, y, rad, 0, Math.PI * 2);
+      c.strokeStyle = st.color; c.lineWidth = 2.2; c.stroke();
+      c.beginPath();
+      c.moveTo(x - rad * 1.35, y); c.lineTo(x - rad * 0.5, y); c.moveTo(x + rad * 0.5, y); c.lineTo(x + rad * 1.35, y);
+      c.moveTo(x, y - rad * 1.35); c.lineTo(x, y - rad * 0.5); c.moveTo(x, y + rad * 0.5); c.lineTo(x, y + rad * 1.35);
+      c.stroke();
+      c.beginPath(); c.arc(x, y, rad * 0.3, 0, Math.PI * 2);
+      c.fillStyle = st.color; c.fill();
+    } else if (st.shape === 'ring') {
+      c.beginPath(); c.arc(x, y, rad * 0.8, 0, Math.PI * 2);
+      c.strokeStyle = ICON_OUTLINE; c.lineWidth = 4; c.stroke();
+      c.strokeStyle = st.color; c.lineWidth = 2.2; c.stroke();
+    } else {
+      iconPath(c, st.shape, x, y, rad);
+      c.fillStyle = st.shape === 'letter' ? 'rgba(11, 16, 13, 0.92)' : st.color;
+      c.fill();
+      c.strokeStyle = st.shape === 'letter' ? st.color : ICON_OUTLINE;
+      c.lineWidth = st.shape === 'letter' ? 1.6 : 1.5;
+      c.stroke();
+      const g = glyph || st.glyph;
+      if (g && (st.shape === 'letter' || st.shape === 'quest')) {
+        c.font = 'bold ' + Math.round(rad * 1.35) + 'px Consolas, "Courier New", monospace';
+        c.textAlign = 'center';
+        c.textBaseline = 'middle';
+        c.fillStyle = st.shape === 'letter' ? st.color : '#051b20';
+        c.fillText(g, x, y + 0.5);
+      }
+    }
+    c.restore();
+  }
+
+  // Agrupa ícones do mesmo tipo a menos de CLUSTER_PX na tela
+  function clusterIcons(items) {
+    const out = [];
+    const used = new Uint8Array(items.length);
+    for (let i = 0; i < items.length; i++) {
+      if (used[i]) continue;
+      const a = items[i];
+      const grp = [a];
+      used[i] = 1;
+      for (let j = i + 1; j < items.length; j++) {
+        if (used[j] || items[j].type !== a.type) continue;
+        if (Math.abs(items[j].sx - a.sx) < CLUSTER_PX && Math.abs(items[j].sy - a.sy) < CLUSTER_PX) {
+          grp.push(items[j]);
+          used[j] = 1;
+        }
+      }
+      if (grp.length === 1) {
+        out.push(Object.assign({ count: 1 }, a));
+        continue;
+      }
+      let wx = 0, wy = 0, sx = 0, sy = 0;
+      for (let k = 0; k < grp.length; k++) { wx += grp[k].x; wy += grp[k].y; sx += grp[k].sx; sy += grp[k].sy; }
+      const n = grp.length;
+      out.push({ type: a.type, x: wx / n, y: wy / n, sx: sx / n, sy: sy / n, label: a.label, count: n });
+    }
+    return out;
+  }
+
+  function drawCountBadge(sx, sy, n) {
+    const t = n > 99 ? '99+' : String(n);
+    ctx.font = 'bold 9px Consolas, monospace';
+    const w = Math.max(13, ctx.measureText(t).width + 6);
+    const bx = sx + 6;
+    const by = sy - 15;
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(bx, by, w, 12);
+    ctx.strokeStyle = ICON_OUTLINE;
+    ctx.lineWidth = 1;
+    ctx.strokeRect(bx + 0.5, by + 0.5, w - 1, 11);
+    ctx.fillStyle = '#0b1210';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(t, bx + w / 2, by + 6.5);
   }
 
   // =========================================================================
@@ -1345,6 +1528,7 @@
     if (isMapStale()) hudTitle.textContent = 'CARREGANDO NOVA ILHA...';
     btnClearWp.style.display = waypoint ? 'block' : 'none';
     updatePoiCard();
+    if (typeof updateFilterCounts === 'function') updateFilterCounts();
     measureChrome();
   }
 
@@ -1759,7 +1943,7 @@
         labelQueue.push({
           sx: sx,
           sy: sy,
-          text: (badge ? badge + ' ' : '') + label + ' [' + sectorLabel(wx, wy) + ']' + dTxt,
+          text: label + ' [' + sectorLabel(wx, wy) + ']' + dTxt,
           color: color,
           prio: 0,
           force: true
@@ -1768,7 +1952,7 @@
         labelQueue.push({
           sx: sx,
           sy: sy,
-          text: (badge ? badge + ' ' : '') + label,
+          text: label,
           color: color,
           prio: prio,
           force: false
@@ -1776,190 +1960,70 @@
       }
     }
 
-    // 2. Pontos de Referência Geográficos (Igrejas, Hospitais, Bases Militares, Postos...)
-    if (filters.landmarks && landmarks.length) {
-      for (let li = 0; li < landmarks.length; li++) {
-        let lm = landmarks[li];
-        let ls = worldToScreen(lm.x, lm.y);
-        if (ls.x < -24 || ls.y < -24 || ls.x > vw + 24 || ls.y > vh + 24) continue;
+    // 2-5. Ícones de mapa com LOD por zoom + agrupamento por tipo
+    const essentialOnly = cam.zoom < ISLAND_ZOOM;
+    const iconItems = [];
+    const addIcon = function (type, wx, wy, label) {
+      const st = ICON_STYLE[type];
+      if (!st || (st.minZoom && cam.zoom < st.minZoom)) return;
+      if (essentialOnly && !st.essential) return;
+      const s = worldToScreen(wx, wy);
+      if (s.x < -30 || s.y < -30 || s.x > vw + 30 || s.y > vh + 30) return;
+      iconItems.push({ type: type, x: wx, y: wy, sx: s.x, sy: s.y, label: label || st.name });
+    };
 
-        if (cam.zoom >= LANDMARK_BADGE_ZOOM || lm.prio <= 3) {
-          let rad = cam.zoom >= 0.08 ? 8.5 : 6.8;
-          ctx.beginPath();
-          ctx.arc(ls.x, ls.y, rad, 0, Math.PI * 2);
-          ctx.fillStyle = 'rgba(12, 16, 14, 0.86)';
-          ctx.fill();
-          ctx.strokeStyle = lm.color;
-          ctx.lineWidth = 1.5;
-          ctx.stroke();
-
-          ctx.font = (rad > 7 ? '10px' : '8.5px') + ' "Segoe UI Emoji", "Segoe UI Symbol", sans-serif';
-          ctx.fillStyle = lm.color;
-          ctx.textAlign = 'center';
-          ctx.textBaseline = 'middle';
-          ctx.fillText(lm.icon, ls.x, ls.y + 0.5);
-
-          registerInteractive(lm.x, lm.y, ls.x, ls.y, lm.label, lm.color, lm.icon, lm.prio + 2);
-        }
-      }
+    if (filters.landmarks) {
+      for (let li = 0; li < landmarks.length; li++) addIcon(landmarks[li].kind, landmarks[li].x, landmarks[li].y, landmarks[li].label);
     }
-
-    // 3. Heli Crashes Reais, Veículos Dirigíveis e Tendas
     if (filters.crashes) {
-      let crashes = (mapData && mapData.crashes) || [];
-      for (let ci = 0; ci < crashes.length; ci++) {
-        let cr = crashes[ci];
-        let cs = worldToScreen(cr.x, cr.y);
-        ctx.beginPath();
-        ctx.arc(cs.x, cs.y, 8 + pulse * 3, 0, Math.PI * 2);
-        ctx.strokeStyle = 'rgba(255, 112, 67, 0.6)';
-        ctx.lineWidth = 2;
-        ctx.stroke();
-
-        ctx.fillStyle = '#ff7043';
-        ctx.strokeStyle = '#1f0b05';
-        ctx.lineWidth = 1.5;
-        ctx.beginPath();
-        ctx.moveTo(cs.x, cs.y - 7.5);
-        ctx.lineTo(cs.x + 7.5, cs.y + 6);
-        ctx.lineTo(cs.x - 7.5, cs.y + 6);
-        ctx.closePath();
-        ctx.fill();
-        ctx.stroke();
-
-        registerInteractive(cr.x, cr.y, cs.x, cs.y, cr.label, '#ffab91', '🚁', 2);
-      }
-
-      let tents = (tickData && tickData.tents) || [];
-      for (let ti = 0; ti < tents.length; ti++) {
-        let tn = tents[ti];
-        let ts = worldToScreen(tn.x, tn.y);
-        ctx.fillStyle = '#9ccc65';
-        ctx.strokeStyle = '#142209';
-        ctx.lineWidth = 1.4;
-        ctx.beginPath();
-        ctx.moveTo(ts.x, ts.y - 6.5);
-        ctx.lineTo(ts.x + 7, ts.y + 6);
-        ctx.lineTo(ts.x - 7, ts.y + 6);
-        ctx.closePath();
-        ctx.fill();
-        ctx.stroke();
-
-        registerInteractive(tn.x, tn.y, ts.x, ts.y, tn.label, '#c5e1a5', '⛺', 3);
-      }
-
-      let vehicles = (tickData && tickData.vehicles) || [];
-      for (let vi = 0; vi < vehicles.length; vi++) {
-        let vhObj = vehicles[vi];
-        let vs2 = worldToScreen(vhObj.x, vhObj.y);
-        ctx.fillStyle = '#29b6f6';
-        ctx.strokeStyle = '#071924';
-        ctx.lineWidth = 2;
-        ctx.fillRect(vs2.x - 6.5, vs2.y - 5, 13, 10);
-        ctx.strokeRect(vs2.x - 6.5, vs2.y - 5, 13, 10);
-
-        registerInteractive(vhObj.x, vhObj.y, vs2.x, vs2.y, vhObj.label, '#81d4fa', '🚙', 2);
-      }
+      const crashes = (mapData && mapData.crashes) || [];
+      for (let ci = 0; ci < crashes.length; ci++) addIcon('heli', crashes[ci].x, crashes[ci].y, crashes[ci].label);
+      const tents = (tickData && tickData.tents) || [];
+      for (let ti = 0; ti < tents.length; ti++) addIcon('tent', tents[ti].x, tents[ti].y, tents[ti].label);
+      const vehicles = (tickData && tickData.vehicles) || [];
+      for (let vi = 0; vi < vehicles.length; vi++) addIcon('vehicle', vehicles[vi].x, vehicles[vi].y, vehicles[vi].label);
     }
-
-    // 4. Local Secreto Verdadeiro (1 por Ilha) & Bunkers / Extração (DESTAQUE DOURADO LIMPO)
     if (filters.secrets && mapData) {
-      let goldList = (mapData.secrets || []).concat(mapData.bunkers || []);
-      for (let gi = 0; gi < goldList.length; gi++) {
-        let gold = goldList[gi];
-        let goldS = worldToScreen(gold.x, gold.y);
-
-        ctx.beginPath();
-        ctx.arc(goldS.x, goldS.y, 11 + pulse * 4.5, 0, Math.PI * 2);
-        ctx.fillStyle = 'rgba(255, 213, 79, 0.22)';
-        ctx.fill();
-        ctx.strokeStyle = '#ffd54f';
-        ctx.lineWidth = 1.8;
-        ctx.stroke();
-
-        if (gold.kind === 'secret') {
-          drawStar(goldS.x, goldS.y, 5, 8.8, 4.2);
-          ctx.fillStyle = '#ffd54f';
-          ctx.fill();
-          ctx.strokeStyle = '#2b2000';
-          ctx.lineWidth = 1.3;
-          ctx.stroke();
-          registerInteractive(gold.x, gold.y, goldS.x, goldS.y, gold.label, '#ffd54f', '★', 1);
-        } else {
-          ctx.beginPath();
-          ctx.moveTo(goldS.x, goldS.y - 8);
-          ctx.lineTo(goldS.x + 8, goldS.y);
-          ctx.lineTo(goldS.x, goldS.y + 8);
-          ctx.lineTo(goldS.x - 8, goldS.y);
-          ctx.closePath();
-          ctx.fillStyle = '#ffd54f';
-          ctx.fill();
-          ctx.strokeStyle = '#2b2000';
-          ctx.lineWidth = 1.5;
-          ctx.stroke();
-          registerInteractive(gold.x, gold.y, goldS.x, goldS.y, gold.label, '#ffe082', '◆', 1);
-        }
-      }
+      const secrets = mapData.secrets || [];
+      for (let si = 0; si < secrets.length; si++) addIcon('secret', secrets[si].x, secrets[si].y, secrets[si].label);
+      const bunkers = mapData.bunkers || [];
+      for (let bi = 0; bi < bunkers.length; bi++) addIcon('bunker', bunkers[bi].x, bunkers[bi].y, bunkers[bi].label);
     }
-
-    // 5. Radar de Ameaças Próximas
-    if (filters.threats && tickData && tickData.player) {
-      let ps0 = worldToScreen(tickData.player.x, tickData.player.y);
-      let radScreen = 2600 * cam.zoom;
+    if (filters.threats && !essentialOnly && tickData && tickData.player) {
+      const ps0 = worldToScreen(tickData.player.x, tickData.player.y);
       ctx.beginPath();
-      ctx.arc(ps0.x, ps0.y, radScreen, 0, Math.PI * 2);
-      ctx.strokeStyle = 'rgba(174, 213, 129, 0.30)';
+      ctx.arc(ps0.x, ps0.y, 2600 * cam.zoom, 0, Math.PI * 2);
+      ctx.strokeStyle = 'rgba(255, 82, 82, 0.28)';
       ctx.setLineDash([6, 6]);
       ctx.lineWidth = 1.4;
       ctx.stroke();
       ctx.setLineDash([]);
-
-      let threats = tickData.threats || [];
+      const threats = tickData.threats || [];
       for (let ei = 0; ei < threats.length; ei++) {
-        let th = threats[ei];
-        let es = worldToScreen(th.x, th.y);
-
-        if (th.kind === 'hulk') {
-          ctx.beginPath();
-          ctx.arc(es.x, es.y, 8 + pulse * 4, 0, Math.PI * 2);
-          ctx.fillStyle = 'rgba(255, 23, 68, 0.34)';
-          ctx.fill();
-          ctx.beginPath();
-          ctx.arc(es.x, es.y, 6, 0, Math.PI * 2);
-          ctx.fillStyle = '#ff1744';
-          ctx.fill();
-          registerInteractive(th.x, th.y, es.x, es.y, th.label, '#ff5252', '⚠', 2);
-        } else if (th.kind === 'bandit') {
-          ctx.beginPath();
-          ctx.moveTo(es.x, es.y - 6.5);
-          ctx.lineTo(es.x + 6.5, es.y);
-          ctx.lineTo(es.x, es.y + 6.5);
-          ctx.lineTo(es.x - 6.5, es.y);
-          ctx.closePath();
-          ctx.fillStyle = '#ff5252';
-          ctx.fill();
-          registerInteractive(th.x, th.y, es.x, es.y, th.label, '#ff8a80', '⚠', 3);
-        } else if (th.kind === 'ally') {
-          ctx.beginPath();
-          ctx.arc(es.x, es.y, 5.5, 0, Math.PI * 2);
-          ctx.fillStyle = '#69f0ae';
-          ctx.fill();
-          registerInteractive(th.x, th.y, es.x, es.y, th.label, '#69f0ae', '●', 3);
-        } else if (th.kind === 'special' || th.kind === 'wolf') {
-          ctx.beginPath();
-          ctx.arc(es.x, es.y, 4.6, 0, Math.PI * 2);
-          ctx.fillStyle = th.kind === 'wolf' ? '#ff9100' : '#e040fb';
-          ctx.fill();
-          registerInteractive(th.x, th.y, es.x, es.y, th.label, '#ea80fc', '', 4);
-        } else {
-          ctx.beginPath();
-          ctx.arc(es.x, es.y, 3.2, 0, Math.PI * 2);
-          ctx.fillStyle = 'rgba(255, 82, 82, 0.85)';
-          ctx.fill();
-        }
+        const th = threats[ei];
+        const tk = th.kind === 'wolf' ? 'special' : (ICON_STYLE[th.kind] ? th.kind : 'zed');
+        addIcon(tk, th.x, th.y, th.label);
       }
     }
 
+    const clusters = clusterIcons(iconItems);
+    for (let k = 0; k < clusters.length; k++) {
+      const it = clusters[k];
+      const st = ICON_STYLE[it.type];
+      const r = st.essential ? 8.5 : 7;
+      if (st.pulse) {
+        ctx.beginPath();
+        ctx.arc(it.sx, it.sy, r + 4 + pulse * 4, 0, Math.PI * 2);
+        ctx.strokeStyle = st.color;
+        ctx.globalAlpha = 0.55;
+        ctx.lineWidth = 1.8;
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+      }
+      drawIconShape(ctx, it.type, it.sx, it.sy, r);
+      if (it.count > 1) drawCountBadge(it.sx, it.sy, it.count);
+      registerInteractive(it.x, it.y, it.sx, it.sy, it.count > 1 ? st.name + ' ×' + it.count : it.label, st.color, '', st.prio || 4);
+    }
     // 5.5. Missões & Sobreviventes Neutros (NPC Quest Giver & Itens Solicitados)
     if (filters.quests && tickData && tickData.quest) {
       let qst = tickData.quest;
@@ -1976,7 +2040,7 @@
 
         let qRingCol = isDone ? 'rgba(118, 255, 3, 0.85)' : (isActive ? 'rgba(77, 208, 225, 0.85)' : 'rgba(77, 208, 225, 0.55)');
         let qFillCol = isDone ? '#76ff03' : (isActive ? '#4dd0e1' : '#26c6da');
-        let qIcon = isDone ? '✔' : (isActive ? '!' : '?');
+        let qIcon = isDone ? '✓' : (isActive ? '!' : '?');
 
         ctx.beginPath();
         ctx.arc(gvS.x, gvS.y, 11 + pulse * 4, 0, Math.PI * 2);
@@ -1984,19 +2048,14 @@
         ctx.lineWidth = 2.2;
         ctx.stroke();
 
-        ctx.beginPath();
-        ctx.arc(gvS.x, gvS.y, 8, 0, Math.PI * 2);
-        ctx.fillStyle = qFillCol;
-        ctx.fill();
-        ctx.strokeStyle = '#051b20';
-        ctx.lineWidth = 1.6;
-        ctx.stroke();
-
-        ctx.font = 'bold 11px Consolas, monospace';
-        ctx.fillStyle = '#051b20';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillText(qIcon, gvS.x, gvS.y + 0.5);
+        drawIconShape(ctx, 'quest', gvS.x, gvS.y, 8, qIcon);
+        if (isDone) {
+          ctx.beginPath();
+          ctx.arc(gvS.x, gvS.y, 8, 0, Math.PI * 2);
+          ctx.strokeStyle = qFillCol;
+          ctx.lineWidth = 2;
+          ctx.stroke();
+        }
 
         let qLabel = gv.name || 'Sobrevivente Neutro';
         if (isDone) {
@@ -2007,7 +2066,7 @@
           qLabel = 'Sobrevivente (Missão Disponível)';
         }
 
-        registerInteractive(gv.x, gv.y, gvS.x, gvS.y, qLabel, '#4dd0e1', '[' + qIcon + ']', 1);
+        registerInteractive(gv.x, gv.y, gvS.x, gvS.y, qLabel, '#4dd0e1', '', 1);
 
         if (cam.zoom >= LANDMARK_BADGE_ZOOM || isActive || isDone) {
           labelQueue.push({
@@ -2027,45 +2086,33 @@
         let it = itList[iti];
         let its = worldToScreen(it.x, it.y);
 
-        // Halo pulsante roxo/dourado
         ctx.beginPath();
         ctx.arc(its.x, its.y, 12 + pulse * 4.5, 0, Math.PI * 2);
-        ctx.strokeStyle = 'rgba(255, 213, 79, 0.85)';
+        ctx.strokeStyle = 'rgba(77, 208, 225, 0.85)';
         ctx.lineWidth = 2.2;
         ctx.stroke();
+        drawIconShape(ctx, 'qitem', its.x, its.y, 8);
 
-        // Losango roxo vibrante com borda dourada
-        ctx.save();
-        ctx.translate(its.x, its.y);
-        ctx.rotate(Math.PI / 4);
-        ctx.fillStyle = '#ab47bc';
-        ctx.fillRect(-7.5, -7.5, 15, 15);
-        ctx.strokeStyle = '#ffd54f';
-        ctx.lineWidth = 2;
-        ctx.strokeRect(-7.5, -7.5, 15, 15);
-        ctx.restore();
-
-        // Linha pontilhada opcional do jogador até o item
         if (tickData.player) {
           let pItem = worldToScreen(tickData.player.x, tickData.player.y);
           ctx.beginPath();
           ctx.moveTo(pItem.x, pItem.y);
           ctx.lineTo(its.x, its.y);
-          ctx.strokeStyle = 'rgba(255, 213, 79, 0.85)';
+          ctx.strokeStyle = 'rgba(77, 208, 225, 0.85)';
           ctx.setLineDash([7, 5]);
           ctx.lineWidth = 2.2;
           ctx.stroke();
           ctx.setLineDash([]);
         }
 
-        let itLabel = '◆ ' + (it.name || qst.itemName || 'Item da Missão');
-        registerInteractive(it.x, it.y, its.x, its.y, 'Item da Missão: ' + (it.name || qst.itemName), '#ffd54f', '◆', 0);
+        let itLabel = (it.name || qst.itemName || 'Item da Missão') + (tickData.player ? ' • ' + distBearingText(tickData.player.x, tickData.player.y, it.x, it.y) : '');
+        registerInteractive(it.x, it.y, its.x, its.y, 'Item da Missão: ' + (it.name || qst.itemName), '#4dd0e1', '', 0);
 
         labelQueue.push({
           sx: its.x,
           sy: its.y,
           text: itLabel,
-          color: '#ffd54f',
+          color: '#4dd0e1',
           prio: 0,
           force: true
         });
@@ -2077,17 +2124,10 @@
         let tgts = worldToScreen(qTgt.x, qTgt.y);
         ctx.beginPath();
         ctx.arc(tgts.x, tgts.y, 14 + pulse * 5, 0, Math.PI * 2);
-        ctx.strokeStyle = 'rgba(255, 82, 82, 0.95)';
-        ctx.lineWidth = 2.4;
-        ctx.stroke();
-
-        ctx.beginPath();
-        ctx.arc(tgts.x, tgts.y, 8, 0, Math.PI * 2);
-        ctx.fillStyle = '#ff5252';
-        ctx.fill();
-        ctx.strokeStyle = '#ffd54f';
+        ctx.strokeStyle = 'rgba(255, 82, 82, 0.6)';
         ctx.lineWidth = 2;
         ctx.stroke();
+        drawIconShape(ctx, 'target', tgts.x, tgts.y, 8);
 
         if (tickData.player) {
           let pTgt = worldToScreen(tickData.player.x, tickData.player.y);
@@ -2101,8 +2141,8 @@
           ctx.setLineDash([]);
         }
 
-        let tgtLabel = '🎯 ' + (qTgt.label || 'Alvo da Missão') + (tickData.player ? ' • ' + distBearingText(tickData.player.x, tickData.player.y, qTgt.x, qTgt.y) : '');
-        registerInteractive(qTgt.x, qTgt.y, tgts.x, tgts.y, tgtLabel, '#ff5252', '🎯', 0);
+        let tgtLabel = (qTgt.label || 'Alvo da Missão') + (tickData.player ? ' • ' + distBearingText(tickData.player.x, tickData.player.y, qTgt.x, qTgt.y) : '');
+        registerInteractive(qTgt.x, qTgt.y, tgts.x, tgts.y, tgtLabel, '#ff5252', '', 0);
         labelQueue.push({ sx: tgts.x, sy: tgts.y, text: tgtLabel, color: '#ff5252', prio: 0, force: true });
       }
     }
@@ -2400,6 +2440,65 @@
     drawerToggleLbl.textContent = col ? '[Expandir ▲]' : '[Recolher ▼]';
     measureChrome();
   });
+
+  function buildLegend() {
+    const box = document.getElementById('legend');
+    if (!box) return;
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    Object.keys(ICON_STYLE).forEach(function (key) {
+      const st = ICON_STYLE[key];
+      if (!st.legend) return;
+      const row = document.createElement('span');
+      row.className = 'lg-item';
+      const cv = document.createElement('canvas');
+      cv.width = 20 * dpr;
+      cv.height = 20 * dpr;
+      const c = cv.getContext('2d');
+      c.scale(dpr, dpr);
+      drawIconShape(c, key, 10, 10, 6.5);
+      const txt = document.createElement('span');
+      txt.textContent = st.name;
+      row.appendChild(cv);
+      row.appendChild(txt);
+      box.appendChild(row);
+    });
+  }
+  buildLegend();
+
+  document.getElementById('btn-legend').addEventListener('click', function () {
+    const box = document.getElementById('legend');
+    const hidden = box.classList.toggle('hidden');
+    this.textContent = hidden ? 'Legenda ▸' : 'Legenda ▾';
+    measureChrome();
+  });
+
+  const FILTER_KEYS = ['secrets', 'crashes', 'landmarks', 'threats', 'quests'];
+  let essentialMode = false;
+  document.getElementById('btn-essential').addEventListener('click', function () {
+    essentialMode = !essentialMode;
+    const on = { secrets: true, quests: true, crashes: !essentialMode, landmarks: !essentialMode, threats: !essentialMode };
+    FILTER_KEYS.forEach(function (k) {
+      filters[k] = on[k];
+      document.getElementById('flt-' + k).checked = on[k];
+    });
+    this.classList.toggle('active', essentialMode);
+    this.textContent = essentialMode ? 'Mostrar tudo' : 'Só essencial';
+  });
+
+  function updateFilterCounts() {
+    const q = tickData && tickData.quest;
+    const counts = {
+      secrets: mapData ? ((mapData.secrets || []).length + (mapData.bunkers || []).length) : 0,
+      crashes: ((mapData && mapData.crashes) || []).length + ((tickData && tickData.tents) || []).length + ((tickData && tickData.vehicles) || []).length,
+      landmarks: landmarks.length,
+      threats: ((tickData && tickData.threats) || []).length,
+      quests: q ? ((q.givers || (q.giver ? [q.giver] : [])).length + (q.items || []).length + (q.target ? 1 : 0)) : 0
+    };
+    FILTER_KEYS.forEach(function (k) {
+      const el = document.getElementById('cnt-' + k);
+      if (el) el.textContent = '(' + counts[k] + ')';
+    });
+  }
 
   document.getElementById('flt-secrets').addEventListener('change', function (e) { filters.secrets = e.target.checked; });
   document.getElementById('flt-crashes').addEventListener('change', function (e) { filters.crashes = e.target.checked; });
