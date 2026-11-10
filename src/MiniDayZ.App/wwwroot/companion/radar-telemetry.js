@@ -189,6 +189,8 @@
         { type: 't529', kind: 'ally', label: 'Sobrevivente Neutro/Aliado', radius: THREAT_RADIUS_PX }
     ];
 
+    var ISLAND_NAMES = { 1: 'Ilha 1', 2: 'Ilha 2', 3: 'Ilha 3', 4: 'Ilha 4', 5: 'Ilha 5 (Inverno)' };
+
     var lastMapKey = '';
     var lastMapHash = '';
     var lastIslandLevel = 1;
@@ -643,33 +645,46 @@
         list.push({ x: rx, y: ry, kind: kind, label: label });
     }
 
+    function islandFromTilemap(rt) {
+        if (!rt || !rt.types) return 0;
+        for (var ti = 0; ti < GROUND_TILEMAP_TYPES.length; ti++) {
+            var tmType = rt.types[GROUND_TILEMAP_TYPES[ti]];
+            if (!tmType || !tmType.q || !tmType.q.length) continue;
+            var fn = tmType.Ni || (tmType.N && tmType.N.ID) || '';
+            var m = /ground_lvl(\d+)/.exec(fn);
+            if (m) {
+                var det = parseInt(m[1], 10);
+                if (det >= 1 && det <= 5) return det;
+            }
+        }
+        return 0;
+    }
+
+    var islandMismatchWarned = false;
+
     function resolveIslandNumber(layout, gvs, rt) {
         try {
             if (layout && layout.name === 'Tutorial') return 0;
-            var rawLvl = Number(readGv(gvs, 'CurrentLevel', 0)) ||
-                         Number(readGv(gvs, 'island', 0)) ||
-                         Number(readGv(gvs, 'Island', 0)) ||
-                         Number(readGv(gvs, 'current_island', 0)) ||
-                         Number(readGv(gvs, 'level', 0)) || 0;
-            if (rawLvl >= 1 && rawLvl <= 5) return rawLvl;
-
-            if (rt && rt.types) {
-                for (var ti = 0; ti < GROUND_TILEMAP_TYPES.length; ti++) {
-                    var tmType = rt.types[GROUND_TILEMAP_TYPES[ti]];
-                    if (!tmType) continue;
-                    var fn = tmType.Ni || (tmType.N && tmType.N.ID) || '';
-                    var m = /ground_lvl(\d+)/.exec(fn);
-                    if (m && m[1]) {
-                        var det = parseInt(m[1], 10);
-                        if (det >= 1 && det <= 5) return det;
-                    }
+            var lvl = Number(readGv(gvs, 'CurrentLevel', -1));
+            var byTm = islandFromTilemap(rt);
+            if (lvl >= 0 && lvl <= 4) {
+                var isl = lvl + 1;
+                if (byTm && byTm !== isl && !islandMismatchWarned) {
+                    islandMismatchWarned = true;
+                    console.warn('[MDZ Island] CurrentLevel=' + lvl + ' mas tilemap=ground_lvl' + byTm);
                 }
+                return isl;
             }
-            return rawLvl > 0 ? rawLvl : 1;
+            return byTm || 1;
         } catch (err) {
             console.warn('[MDZ Island Error]', err);
             return 1;
         }
+    }
+
+    function islandName(isl) {
+        if (isl === 0) return 'Tutorial';
+        return ISLAND_NAMES[isl] || ('Ilha ' + isl);
     }
 
     function computeMapHash(rt, isl, gvs) {
@@ -1054,7 +1069,7 @@
             }
         }
 
-        var isl = islandNum || resolveIslandNumber(layout, gvs, rt);
+        var isl = (typeof islandNum === 'number' && islandNum >= 0) ? islandNum : resolveIslandNumber(layout, gvs, rt);
         if (!baseTileImg && isl >= 1 && isl <= 5) {
             baseTileImg = 'ground_lvl' + isl + '_tilemap.png';
             regImage(baseTileImg);
@@ -1066,6 +1081,7 @@
             height: mapH,
             island: isl,
             islandLevel: isl,
+            islandName: islandName(isl),
             resetMap: isReset !== false,
             mapHash: mapHash || '',
             difficulty: String(readGv(gvs, 'Difficulty', 'Regular')),
@@ -1570,6 +1586,7 @@
             mapHeight: mapH,
             island: resolvedIsl,
             islandLevel: resolvedIsl,
+            islandName: islandName(resolvedIsl),
             resetMap: isResetMap,
             mapHash: currentHash,
             player: {

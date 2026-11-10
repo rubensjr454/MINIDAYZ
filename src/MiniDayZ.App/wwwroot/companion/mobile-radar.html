@@ -958,8 +958,11 @@
     }
 
     waitBanner.style.display = 'none';
-    var islNum = (tickData && (tickData.islandLevel || tickData.island)) || (mapData && (mapData.islandLevel || mapData.island)) || 1;
-    var isl = islNum === 0 ? 'TUTORIAL' : ('ILHA ' + islNum);
+    var src = (tickData && typeof tickData.islandLevel === 'number') ? tickData : mapData;
+    var islNum = (src && typeof src.islandLevel === 'number') ? src.islandLevel
+               : (src && typeof src.island === 'number') ? src.island : 1;
+    var islName = (src && src.islandName) || '';
+    var isl = islNum === 0 ? 'TUTORIAL' : ('ILHA ' + islNum + (islName && islName !== 'Ilha ' + islNum ? ' — ' + islName.toUpperCase() : ''));
     if (tickData && tickData.player) {
       var p = tickData.player;
       hudTitle.textContent = isl + (p.inBunker ? ' [BUNKER]' : '') + ' • DIA ' + p.day + ' ' + p.clock;
@@ -979,6 +982,7 @@
     } else {
       hudTitle.textContent = isl + ' • SATÉLITE PRONTO';
     }
+    if (isMapStale()) hudTitle.textContent = 'CARREGANDO NOVA ILHA...';
     btnClearWp.style.display = waypoint ? 'block' : 'none';
     updatePoiCard();
   }
@@ -1768,9 +1772,16 @@
   // =========================================================================
   // STREAMING SSE LEVE + HIDRATAÇÃO INICIAL (/state + /events)
   // =========================================================================
+  var resyncHash = '';
+  var resyncAt = 0;
+
+  function isMapStale() {
+    return !!(tickData && tickData.mapHash && mapData && !mapData.isFallback && mapData.mapHash && tickData.mapHash !== mapData.mapHash);
+  }
+
   function applyMapInit(data) {
     if (!data) return;
-    var firstLoad = !mapData || mapData.isFallback || mapData.island !== data.island || mapData.layout !== data.layout;
+    var firstLoad = !mapData || mapData.isFallback || (mapData.mapHash || '') !== (data.mapHash || '') || mapData.layout !== data.layout;
     mapData = data;
     if (typeof staticCtx !== 'undefined' && staticCtx && typeof staticLayer !== 'undefined' && staticLayer) {
       staticCtx.clearRect(0, 0, staticLayer.width, staticLayer.height);
@@ -1869,6 +1880,15 @@
       bakeStaticMap();
       fitIsland();
       fetchStateSnapshot();
+    }
+
+    if (isMapStale()) {
+      var now = Date.now();
+      if (resyncHash !== data.mapHash || now - resyncAt > 3000) {
+        resyncHash = data.mapHash;
+        resyncAt = now;
+        fetchStateSnapshot();
+      }
     }
 
     if (!hadTick && data.player && cam.follow) {
