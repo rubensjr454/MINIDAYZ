@@ -22,7 +22,7 @@
   html, body {
     width: 100%; height: 100%; overflow: hidden;
     background: var(--bg); color: var(--text);
-    font-family: Consolas, "Segoe UI", system-ui, sans-serif;
+    font-family: "Segoe UI", Roboto, system-ui, -apple-system, sans-serif;
     touch-action: none; user-select: none; -webkit-user-select: none;
   }
   #radar-canvas {
@@ -42,18 +42,19 @@
   .dot { width: 8px; height: 8px; border-radius: 50%; background: #ff9800; box-shadow: 0 0 6px #ff9800; flex-shrink: 0; }
   .dot.online { background: #76ff03; box-shadow: 0 0 8px #76ff03; }
   .tex-pill {
-    font-size: 10px; font-weight: 700; color: #b0bec5;
+    font-size: 11px; font-weight: 700; color: #b0bec5;
     background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.14);
     border-radius: 4px; padding: 1px 5px; display: none;
   }
   .vitals { display: flex; align-items: center; gap: 6px; font-size: 11px; flex-wrap: wrap; }
-  .vital-pill {
+  .vital-pill, .mono { font-family: Consolas, "SF Mono", "Roboto Mono", monospace; }
     background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.12);
     border-radius: 4px; padding: 2px 6px; font-weight: 700;
   }
-  .v-hp { color: #ff8a80; }
-  .v-wt { color: #80d8ff; }
-  .v-fd { color: #ffd180; }
+  .v-hp, .v-wt, .v-fd { color: var(--text); }
+  .lvl-ok { color: #9ccc65; border-color: rgba(156, 204, 101, 0.45); }
+  .lvl-warn { color: #ffd54f; border-color: rgba(255, 213, 79, 0.5); }
+  .lvl-bad { color: #ff5252; border-color: rgba(255, 82, 82, 0.6); background: rgba(255, 82, 82, 0.12); }
   .v-tm { color: #ccff90; }
   .v-sec { color: #dce775; border-color: rgba(220, 231, 117, 0.35); }
 
@@ -66,14 +67,14 @@
     background: var(--panel); color: var(--text); border: 1px solid var(--border);
     border-radius: 7px; padding: 8px 10px; font-size: 11.5px; font-weight: 700;
     cursor: pointer; box-shadow: 0 3px 10px rgba(0,0,0,0.62); font-family: inherit;
-    text-align: left;
+    text-align: left; min-height: 44px; min-width: 44px;
   }
   .tac-btn.active { border-color: var(--accent); color: var(--accent); background: rgba(34, 48, 28, 0.95); }
   .tac-btn.wp-clear { border-color: rgba(255, 213, 79, 0.65); color: var(--gold); display: none; }
 
   /* Card Flutuante de Inspeção ao Tocar em um Ícone/Ponto */
   #poi-card {
-    position: fixed; left: 30px; right: 98px; top: 68px;
+    position: fixed; left: 30px; top: 68px; max-width: min(340px, calc(100vw - 24px));
     display: none; align-items: center; justify-content: space-between; gap: 8px;
     background: rgba(12, 18, 14, 0.94); border: 1px solid var(--gold);
     border-radius: 8px; padding: 6px 10px; z-index: 12;
@@ -81,11 +82,11 @@
   }
   #poi-card-info { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
   #poi-card-title { font-weight: 700; color: var(--gold); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  #poi-card-sub { font-size: 10.5px; color: var(--muted); }
+  #poi-card-sub { font-size: 11px; color: var(--muted); font-family: Consolas, monospace; }
   #poi-card-actions { display: flex; align-items: center; gap: 5px; flex-shrink: 0; }
   .mini-btn {
     background: rgba(77, 208, 225, 0.14); color: var(--cyan); border: 1px solid rgba(77, 208, 225, 0.55);
-    border-radius: 5px; padding: 4px 7px; font-size: 10.5px; font-weight: 700; cursor: pointer; font-family: inherit;
+    border-radius: 5px; padding: 4px 9px; font-size: 11px; font-weight: 700; cursor: pointer; font-family: inherit; min-height: 34px;
   }
   .mini-btn.close { background: rgba(255,255,255,0.06); color: var(--muted); border-color: rgba(255,255,255,0.2); }
 
@@ -128,6 +129,46 @@
     background: rgba(12, 16, 12, 0.93); border: 1px solid var(--border); border-radius: 10px;
     padding: 16px 20px; text-align: center; z-index: 6; max-width: 88vw; pointer-events: none;
   }
+  #side-panel { display: contents; }
+  #waiting-banner.warn { border-color: rgba(255, 152, 0, 0.7); }
+  #waiting-banner.warn h2 { color: #ffb74d; }
+
+  @media (max-width: 899px) {
+    .vitals { gap: 4px; }
+    .vital-pill { padding: 2px 5px; }
+    #fab-col .tac-btn { padding: 8px; text-align: center; font-size: 15px; }
+    #fab-col .lbl { display: none; }
+    #fab-col { align-items: flex-end; }
+    #btn-follow { font-size: 12px !important; }
+    .flt-item { min-height: 36px; }
+  }
+
+  /* Desktop / 2º monitor: painel lateral fixo à direita */
+  @media (min-width: 900px) {
+    #side-panel {
+      display: flex; flex-direction: column; gap: 8px;
+      position: fixed; top: 8px; right: 8px; bottom: 8px; width: 310px; z-index: 12;
+    }
+    #top-hud, #bottom-drawer {
+      position: static; left: auto; right: auto; top: auto; bottom: auto; width: 100%;
+    }
+    #top-hud { flex-direction: column; align-items: stretch; gap: 8px; padding: 10px 12px; }
+    #top-hud .status-grp { font-size: 14px; flex-wrap: wrap; }
+    #top-hud .vitals { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; font-size: 12px; }
+    #top-hud .vital-pill { text-align: center; padding: 4px 6px; }
+    #top-hud .v-sec, #top-hud .v-qst { grid-column: 1 / -1; }
+    #bottom-drawer { flex: 1; min-height: 0; overflow-y: auto; }
+    #bottom-drawer.collapsed #filters-body { display: grid; }
+    #bottom-drawer.collapsed #drawer-extra { display: block; }
+    #drawer-toggle-lbl { display: none; }
+    #drawer-head { cursor: default; }
+    #filters-body { grid-template-columns: 1fr; }
+    #fab-col { right: 330px; top: 12px; }
+    #fab-col .tac-btn { min-width: 118px; }
+    #btn-zoom-in, #btn-zoom-out { border-radius: 0; margin-top: -7px; }
+    #btn-zoom-in { border-radius: 7px 7px 0 0; margin-top: 0; }
+    #btn-zoom-out { border-radius: 0 0 7px 7px; }
+  }
   #waiting-banner h2 { font-size: 14px; color: var(--accent); margin-bottom: 6px; }
   #waiting-banner p { font-size: 12px; color: var(--muted); line-height: 1.45; }
 </style>
@@ -135,6 +176,7 @@
 <body>
   <canvas id="radar-canvas"></canvas>
 
+  <aside id="side-panel">
   <div id="top-hud">
     <div class="status-grp">
       <span id="conn-dot" class="dot"></span>
@@ -158,21 +200,22 @@
     </div>
     <div id="poi-card-actions">
       <button type="button" class="mini-btn" id="btn-poi-wp">📍 Waypoint</button>
+      <button type="button" class="mini-btn" id="btn-poi-center">⌖ Centralizar</button>
       <button type="button" class="mini-btn close" id="btn-poi-close">✕</button>
     </div>
   </div>
 
   <div id="fab-col">
     <button type="button" class="tac-btn active" id="btn-follow">📍 Onde estou</button>
-    <button type="button" class="tac-btn" id="btn-fit">🗺️ Ilha</button>
-    <button type="button" class="tac-btn" id="btn-zoom-in">＋ Zoom</button>
-    <button type="button" class="tac-btn" id="btn-zoom-out">－ Zoom</button>
-    <button type="button" class="tac-btn wp-clear" id="btn-clear-wp">✕ Limpar WP</button>
+    <button type="button" class="tac-btn" id="btn-fit" title="Ilha inteira">🗺️<span class="lbl"> Ilha</span></button>
+    <button type="button" class="tac-btn" id="btn-zoom-in" title="Aproximar">＋<span class="lbl"> Zoom</span></button>
+    <button type="button" class="tac-btn" id="btn-zoom-out" title="Afastar">－<span class="lbl"> Zoom</span></button>
+    <button type="button" class="tac-btn wp-clear" id="btn-clear-wp" title="Limpar waypoint">✕<span class="lbl"> Limpar WP</span></button>
   </div>
 
   <div id="waiting-banner">
-    <h2>MAPA DE SATÉLITE &amp; RADAR PRONTO</h2>
-    <p>Inicie ou carregue uma partida no MiniDayZ no PC.<br/>A planta aérea detalhada da ilha e a telemetria 1Hz serão sincronizadas automaticamente.</p>
+    <h2 id="wait-title">CONECTANDO AO PC...</h2>
+    <p id="wait-msg">Procurando o MiniDayZ na rede local.</p>
   </div>
 
   <div id="bottom-drawer" class="collapsed">
@@ -214,6 +257,7 @@
       <div id="legend" class="hidden"></div>
     </div>
   </div>
+  </aside>
 
 <script>
 (function () {
@@ -383,6 +427,11 @@
   let offscreenHit = null;
   let hudBottom = 54;
   let drawerTop = 0;
+  let panelW = 0;
+  let pcSilent = false;
+  const waitTitle = document.getElementById('wait-title');
+  const waitMsg = document.getElementById('wait-msg');
+  const desktopMq = window.matchMedia('(min-width: 900px)');
 
   function bearingDeg(dx, dy) {
     return (Math.atan2(dx, -dy) * 180 / Math.PI + 360) % 360;
@@ -403,6 +452,14 @@
   }
 
   function measureChrome() {
+    if (desktopMq.matches) {
+      const side = document.getElementById('side-panel');
+      panelW = side ? Math.round(window.innerWidth - side.getBoundingClientRect().left) + 8 : 0;
+      hudBottom = 8;
+      drawerTop = window.innerHeight;
+      return;
+    }
+    panelW = 0;
     const hud = document.getElementById('top-hud');
     const drw = document.getElementById('bottom-drawer');
     if (hud) hudBottom = hud.getBoundingClientRect().bottom;
@@ -464,13 +521,17 @@
 
   function fitIsland() {
     if (!mapData) return;
-    var vw = Math.max(200, window.innerWidth - 36);
-    var vh = Math.max(200, window.innerHeight - 135);
-    var zx = vw / (mapData.width * 1.03);
-    var zy = vh / (mapData.height * 1.03);
-    cam.zoom = Math.max(0.014, Math.min(zx, zy));
-    cam.x = mapData.width * 0.5;
-    cam.y = mapData.height * 0.5;
+    measureChrome();
+    const g = getGridSpec();
+    const x0 = Math.max(0, g.originX);
+    const y0 = Math.max(0, g.originY);
+    const w = Math.min(mapData.width, g.originX + g.cols * g.cellW) - x0;
+    const h = Math.min(mapData.height, g.originY + g.rows * g.cellH) - y0;
+    const vw = Math.max(200, window.innerWidth - panelW - 60);
+    const vh = Math.max(200, (drawerTop || window.innerHeight) - hudBottom - 50);
+    cam.zoom = Math.max(0.012, Math.min(vw / (w * 1.04), vh / (h * 1.04)));
+    cam.x = x0 + w * 0.5;
+    cam.y = y0 + h * 0.5 - ((drawerTop || window.innerHeight) + hudBottom - window.innerHeight) * 0.5 / cam.zoom;
   }
 
   // =========================================================================
@@ -1474,44 +1535,82 @@
   // HUD, COORDENADAS E DESPOLUIÇÃO INTELIGENTE DE RÓTULOS (ZOOM / HOVER / TAP)
   // =========================================================================
   function updatePoiCard() {
-    var active = selectedPoi || hoveredPoi;
+    const active = selectedPoi || hoveredPoi;
     if (!active) {
       poiCard.style.display = 'none';
       return;
     }
-    var sec = sectorLabel(active.x, active.y);
-    var distStr = '';
-    if (tickData && tickData.player) {
-      var dm = Math.round(Math.hypot(active.x - tickData.player.x, active.y - tickData.player.y) / PX_PER_METER);
-      distStr = ' • ' + dm + 'm de você';
-    }
-    poiCardTitle.textContent = (active.badge ? active.badge + ' ' : '') + active.label;
+    const distStr = (tickData && tickData.player)
+      ? ' • ' + distBearingText(tickData.player.x, tickData.player.y, active.x, active.y) + ' de você'
+      : '';
+    poiCardTitle.textContent = active.label;
     poiCardTitle.style.color = active.color || '#ffd54f';
-    poiCardSub.textContent = 'Setor ' + sec + distStr;
+    poiCardSub.textContent = 'Setor ' + sectorLabel(active.x, active.y) + distStr;
     poiCard.style.borderColor = active.color || '#ffd54f';
     poiCard.style.display = 'flex';
+    positionPoiCard();
+  }
+
+  // Card ancorado perto do ponto tocado (acima; abaixo se não couber)
+  function positionPoiCard() {
+    const active = selectedPoi || hoveredPoi;
+    if (!active || poiCard.style.display === 'none') return;
+    const s = worldToScreen(active.x, active.y);
+    const w = poiCard.offsetWidth;
+    const h = poiCard.offsetHeight;
+    const maxX = window.innerWidth - panelW - w - 8;
+    const x = Math.max(8, Math.min(maxX, s.x - w / 2));
+    let y = s.y - h - 22;
+    if (y < hudBottom + 6) y = s.y + 22;
+    y = Math.max(hudBottom + 6, Math.min((drawerTop || window.innerHeight) - h - 6, y));
+    poiCard.style.left = Math.round(x) + 'px';
+    poiCard.style.top = Math.round(y) + 'px';
+  }
+
+  function vitalLevel(el, v) {
+    el.classList.toggle('lvl-ok', v >= 60);
+    el.classList.toggle('lvl-warn', v >= 30 && v < 60);
+    el.classList.toggle('lvl-bad', v < 30);
+  }
+
+  function setWait(title, msg, warn) {
+    waitTitle.textContent = title;
+    waitMsg.textContent = msg;
+    waitBanner.classList.toggle('warn', !!warn);
+    waitBanner.style.display = 'block';
   }
 
   function updateHudText() {
     connDot.classList.toggle('online', sseConnected && !!(mapData || tickData));
-    if (!mapData && !tickData) {
-      hudTitle.textContent = sseConnected ? 'ONLINE • AGUARDANDO PARTIDA' : 'RECONECTANDO...';
-      waitBanner.style.display = 'block';
-      return;
-    }
-
-    waitBanner.style.display = 'none';
-    var src = (tickData && typeof tickData.islandLevel === 'number') ? tickData : mapData;
-    var islNum = (src && typeof src.islandLevel === 'number') ? src.islandLevel
+    const src = (tickData && typeof tickData.islandLevel === 'number') ? tickData : mapData;
+    const islNum = (src && typeof src.islandLevel === 'number') ? src.islandLevel
                : (src && typeof src.island === 'number') ? src.island : 1;
-    var islName = (src && src.islandName) || '';
-    var isl = islNum === 0 ? 'TUTORIAL' : ('ILHA ' + islNum + (islName && islName !== 'Ilha ' + islNum ? ' — ' + islName.toUpperCase() : ''));
+    const islName = (src && src.islandName) || '';
+    const isl = islNum === 0 ? 'TUTORIAL' : ('ILHA ' + islNum + (islName && islName !== 'Ilha ' + islNum ? ' — ' + islName.toUpperCase() : ''));
+
+    if (!sseConnected && pcSilent) {
+      hudTitle.textContent = 'PC SEM RESPOSTA';
+      setWait('PC SEM RESPOSTA', 'Confira se o MiniDayZ está aberto, o radar ligado (F1) e se o celular está no mesmo Wi-Fi. Tentando de novo...', true);
+    } else if (!mapData && !tickData) {
+      hudTitle.textContent = sseConnected ? 'ONLINE • AGUARDANDO PARTIDA' : 'CONECTANDO AO PC...';
+      if (sseConnected) setWait('AGUARDANDO PARTIDA', 'Conectado ao PC. Inicie ou carregue uma partida no MiniDayZ; o mapa abre sozinho.');
+      else setWait('CONECTANDO AO PC...', 'Procurando o MiniDayZ na rede local.');
+    } else if (isMapStale()) {
+      setWait(islNum === 0 ? 'CARREGANDO TUTORIAL...' : 'CARREGANDO ILHA ' + islNum + '...', 'Nova ilha detectada. Baixando o mapa do PC.');
+    } else {
+      waitBanner.style.display = 'none';
+    }
+    if (!mapData && !tickData) return;
+
     if (tickData && tickData.player) {
-      var p = tickData.player;
-      hudTitle.textContent = isl + (p.inBunker ? ' [BUNKER]' : '') + ' • DIA ' + p.day + ' ' + p.clock;
+      const p = tickData.player;
+      hudTitle.textContent = isl + (p.inBunker ? ' [BUNKER]' : '') + ' • DIA ' + p.day + ' • ' + p.clock;
       elHp.textContent = '❤ ' + p.hp + '%';
       elWt.textContent = '💧 ' + p.water + '%';
       elFd.textContent = '🥫 ' + p.food + '%';
+      vitalLevel(elHp, p.hp);
+      vitalLevel(elWt, p.water);
+      vitalLevel(elFd, p.food);
       elTm.textContent = '🌡 ' + (p.temp > 0 ? '+' + p.temp : p.temp);
       elPos.textContent = 'SETOR ' + sectorLabel(p.x, p.y) + ' • ' + cardinal(bearingDeg(Math.cos(p.angle || 0), Math.sin(p.angle || 0)));
       if (elQst) {
@@ -1523,33 +1622,28 @@
         }
       }
     } else {
-      hudTitle.textContent = isl + ' • SATÉLITE PRONTO';
+      hudTitle.textContent = isl + ' • MAPA PRONTO';
     }
     if (isMapStale()) hudTitle.textContent = 'CARREGANDO NOVA ILHA...';
     btnClearWp.style.display = waypoint ? 'block' : 'none';
     updatePoiCard();
-    if (typeof updateFilterCounts === 'function') updateFilterCounts();
+    updateFilterCounts();
     measureChrome();
   }
 
   function worldToScreen(wx, wy) {
-    var vw = window.innerWidth;
-    var vh = window.innerHeight;
     return {
-      x: (wx - cam.x) * cam.zoom + vw * 0.5,
-      y: (wy - cam.y) * cam.zoom + vh * 0.5
+      x: (wx - cam.x) * cam.zoom + (window.innerWidth - panelW) * 0.5,
+      y: (wy - cam.y) * cam.zoom + window.innerHeight * 0.5
     };
   }
 
   function screenToWorld(sx, sy) {
-    var vw = window.innerWidth;
-    var vh = window.innerHeight;
     return {
-      x: (sx - vw * 0.5) / cam.zoom + cam.x,
-      y: (sy - vh * 0.5) / cam.zoom + cam.y
+      x: (sx - (window.innerWidth - panelW) * 0.5) / cam.zoom + cam.x,
+      y: (sy - window.innerHeight * 0.5) / cam.zoom + cam.y
     };
   }
-
   function isSameTarget(a, b) {
     if (!a || !b) return false;
     return a.label === b.label && Math.abs(a.x - b.x) <= 8 && Math.abs(a.y - b.y) <= 8;
@@ -1886,11 +1980,11 @@
   }
 
   function renderFrame() {
-    let vw = window.innerWidth;
-    let vh = window.innerHeight;
+    const vw = window.innerWidth - panelW;
+    const vh = window.innerHeight;
 
     ctx.fillStyle = THEME.sea;
-    ctx.fillRect(0, 0, vw, vh);
+    ctx.fillRect(0, 0, window.innerWidth, vh);
 
     if (!cam.follow && tickData && tickData.player && Date.now() - lastInteract > AUTO_RECENTER_MS) {
       setFollow(true);
@@ -2212,6 +2306,7 @@
     if (tickData && tickData.player) drawOffscreenPlayer(tickData.player, vw, vh);
     else offscreenHit = null;
 
+    positionPoiCard();
     window.requestAnimationFrame(renderFrame);
   }
 
@@ -2428,6 +2523,15 @@
   document.getElementById('btn-poi-wp').addEventListener('click', function () {
     var active = selectedPoi || hoveredPoi;
     if (active) placeWaypointAt(active.x, active.y);
+  });
+  document.getElementById('btn-poi-center').addEventListener('click', function () {
+    const active = selectedPoi || hoveredPoi;
+    if (!active) return;
+    markInteract();
+    setFollow(false);
+    cam.x = active.x;
+    cam.y = active.y;
+    if (cam.zoom < ISLAND_ZOOM) cam.zoom = 0.095;
   });
   document.getElementById('btn-poi-close').addEventListener('click', function () {
     selectedPoi = null;
@@ -2647,9 +2751,13 @@
     updateHudText();
   }
 
+  let fetchFails = 0;
+
   function fetchStateSnapshot() {
     fetch('/state?t=' + encodeURIComponent(TOKEN)).then(function (r) { return r.json(); }).then(function (st) {
       sseConnected = true;
+      fetchFails = 0;
+      pcSilent = false;
       if (st.map) applyMapInit(st.map);
       if (st.deltas && st.deltas.length) {
         for (var d = 0; d < st.deltas.length; d++) applyMapDelta(st.deltas[d]);
@@ -2657,7 +2765,11 @@
       if (st.tick) applyTick(st.tick);
       applyWaypoint(st.waypoint);
       updateHudText();
-    }).catch(function () {});
+    }).catch(function () {
+      fetchFails++;
+      pcSilent = fetchFails >= 2;
+      updateHudText();
+    });
   }
 
   fetchStateSnapshot();
@@ -2671,6 +2783,8 @@
     var es = new EventSource('/events?t=' + encodeURIComponent(TOKEN));
     es.onopen = function () {
       sseConnected = true;
+      fetchFails = 0;
+      pcSilent = false;
       updateHudText();
     };
     es.addEventListener('map_init', function (e) {
