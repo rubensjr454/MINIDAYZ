@@ -137,6 +137,7 @@
         t977: ['bridge', 'Ponte']
     };
 
+    var questItemWarned = {};
     var EE_SECRET_DEFS = [
         { t: 't355', label: 'Estação de Radar' },
         { t: 't695', label: 'Tanque Blindado KV-2' },
@@ -1307,6 +1308,10 @@
                         36: 'Munição', 46: 'Garrafa de Vodka', 53: 'Bolsa Térmica', 59: 'Caixa de Ferramentas',
                         60: 'Fósforos', 71: 'Fita Adesiva', 88: 'Maleta Secreta'
                     };
+                    if (!FALLBACK_ITEMS[qTargetSid] && !questItemWarned[qTargetSid]) {
+                        questItemWarned[qTargetSid] = true;
+                        console.warn('[MDZ Quest] item sem nome no t540 e sem fallback, id ' + qTargetSid);
+                    }
                     questItemName = FALLBACK_ITEMS[qTargetSid] || ('Item #' + qTargetSid);
                 }
             }

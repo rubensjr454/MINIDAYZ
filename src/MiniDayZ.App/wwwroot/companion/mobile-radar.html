@@ -2996,6 +2996,8 @@
   function applyTick(data) {
     if (!data) return;
     var hadTick = !!tickData;
+    // Ilha nova: o rastro da ilha antiga nao pode ligar com o ponto novo.
+    if (mapData && !mapData.isFallback && mapData.mapHash && data.mapHash && data.mapHash !== mapData.mapHash) trail = [];
     tickData = data;
     pushTrail(data.player);
 
